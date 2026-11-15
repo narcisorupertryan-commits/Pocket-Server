@@ -1,0 +1,11 @@
+{
+  "name": "pocket-server-node",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express server that runs on the phone inside the Capacitor shell.",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^5.3.0",
+    "multer": "^2.5.0"
+  }
+}

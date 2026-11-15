@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Pocket Server — quick reference</title>
+<style>
+  :root {
+    --ink: #111;
+    --muted: #555;
+    --line: #c9c9c9;
+    --tint: #f2f2f2;
+    --accent: #0b6b3a;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #e8e8e8;
+    color: var(--ink);
+    font: 9.2pt/1.3 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* On screen this looks like the sheet of paper it will print as. */
+  .sheet {
+    width: 210mm;
+    min-height: 297mm;
+    margin: 8mm auto;
+    padding: 9mm 10mm 8mm;
+    background: #fff;
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.18);
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    border-bottom: 2.2pt solid var(--ink);
+    padding-bottom: 2.5mm;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 17pt;
+    letter-spacing: -0.3pt;
+    line-height: 1;
+  }
+
+  .sub {
+    margin: 1.2mm 0 0;
+    color: var(--muted);
+    font-size: 8.4pt;
+  }
+
+  .ports {
+    display: flex;
+    gap: 2mm;
+  }
+
+  .port {
+    border: 1pt solid var(--ink);
+    border-radius: 1.6mm;
+    padding: 1.4mm 2.4mm;
+    text-align: center;
+    min-width: 24mm;
+  }
+
+  .port b {
+    display: block;
+    font: 700 12.5pt/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  .port span {
+    font-size: 7.2pt;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+    color: var(--muted);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3.4mm 4.6mm;
+    margin-top: 3.4mm;
+  }
+
+  section {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  section.wide {
+    grid-column: 1 / -1;
+  }
+
+  /* Each column is a flex stack so a short card never leaves a hole in the middle
+     of the column above it. */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 3.4mm;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  td code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  h2 {
+    margin: 0 0 1.4mm;
+    font-size: 8.4pt;
+    text-transform: uppercase;
+    letter-spacing: 0.7pt;
+    color: var(--accent);
+    border-bottom: 0.6pt solid var(--line);
+    padding-bottom: 0.8mm;
+  }
+
+  ol, ul {
+    margin: 0;
+    padding-left: 4.2mm;
+  }
+
+  li { margin-bottom: 0.9mm; }
+
+  li:last-child { margin-bottom: 0; }
+
+  code, .mono {
+    font: 8.6pt/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--tint);
+    padding: 0.2mm 1.1mm;
+    border-radius: 1mm;
+    white-space: nowrap;
+  }
+
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+
+  .steps > li {
+    counter-increment: step;
+    position: relative;
+    padding-left: 6.2mm;
+  }
+
+  .steps > li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 0.15mm;
+    width: 4.2mm;
+    height: 4.2mm;
+    border-radius: 50%;
+    background: var(--ink);
+    color: #fff;
+    font: 700 7pt/4.2mm -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    text-align: center;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.6pt;
+  }
+
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 1.1mm 1.4mm;
+    border-bottom: 0.5pt solid var(--line);
+  }
+
+  th {
+    font-size: 7.4pt;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+    color: var(--muted);
+  }
+
+  tr:last-child td { border-bottom: 0; }
+
+  .warn {
+    border-left: 2.4pt solid var(--ink);
+    background: var(--tint);
+    padding: 1.8mm 2.4mm;
+    border-radius: 0 1.4mm 1.4mm 0;
+  }
+
+  .warn strong { display: block; margin-bottom: 0.6mm; }
+
+  footer {
+    margin-top: auto;
+    padding-top: 2.5mm;
+    border-top: 0.6pt solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 7.4pt;
+  }
+
+  .print-hint {
+    text-align: center;
+    margin: 0 0 4mm;
+    font-size: 8.5pt;
+    color: var(--muted);
+  }
+
+  @page { size: A4 portrait; margin: 0; }
+
+  @media print {
+    html, body { background: #fff; }
+    .sheet {
+      width: auto;
+      min-height: 0;
+      margin: 0;
+      padding: 8mm 10mm 6mm;
+      box-shadow: none;
+    }
+    .print-hint { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<p class="print-hint">Print this page (Ctrl/Cmd&nbsp;+&nbsp;P → A4, margins “none”, background graphics on). Keep it with the phone.</p>
+
+<div class="sheet">
+
+  <header>
+    <div>
+      <h1>Pocket Server</h1>
+      <p class="sub">Your phone as a local server &middot; PocketBase + file manager &middot; v1.1</p>
+    </div>
+    <div class="ports">
+      <div class="port"><b>8080</b><span>panel</span></div>
+      <div class="port"><b>8090</b><span>site / DB</span></div>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <section class="wide">
+      <h2>Start here — first five minutes</h2>
+      <ol class="steps">
+        <li>Open <strong>Pocket Server</strong>. Allow notifications when asked — the ongoing notification is what keeps the servers alive.</li>
+        <li>Unlock with <code>1234</code>, then go to <strong>Security</strong> and set your own 4–8 digit PIN.</li>
+        <li>Dashboard → <strong>PocketBase account</strong>: create the superuser (email + 8+ character password). Opening Admin alone cannot create it — PocketBase changed that in 0.23.</li>
+        <li><strong>Files</strong> tab: upload files. They are live at <code>http://&lt;phone-ip&gt;:8090/&lt;file&gt;</code>; an <code>index.html</code> becomes the site home page.</li>
+        <li>On the phone's notification tap <strong>Battery</strong> once, to exempt the app from battery optimisation.</li>
+      </ol>
+    </section>
+
+    <div class="col">
+
+    <section>
+      <h2>Ports &amp; addresses</h2>
+      <table>
+        <tr><td><code>8080</code></td><td>Control panel, file manager, logs</td></tr>
+        <tr><td><code>8090</code></td><td>Hosted website (files in <code>pb_public</code>)</td></tr>
+        <tr><td><code>8090/_/</code></td><td>PocketBase admin: users, collections, records</td></tr>
+        <tr><td><code>127.0.0.1</code></td><td>The phone itself (always works)</td></tr>
+        <tr><td><code>192.168.x.x</code></td><td>The phone on your Wi-Fi (shown on the dashboard)</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>PIN</h2>
+      <ul>
+        <li>Default PIN is <code>1234</code>; the dashboard warns until you change it.</li>
+        <li>Change it under <strong>Security</strong>. Every other device is signed out.</li>
+        <li>5 wrong tries = 10-minute lockout (HTTP 429).</li>
+        <li>Forgotten PIN: <em>Settings → Apps → Pocket Server → Storage → Clear data</em>. This also deletes uploads and the database.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Open it from a laptop</h2>
+      <ol>
+        <li>Same Wi-Fi as the phone.</li>
+        <li>Dashboard → <strong>Open from another device</strong> → <strong>Copy server address</strong>.</li>
+        <li>Paste into the laptop browser, e.g. <code>http://192.168.1.42:8080</code>.</li>
+        <li>Site and admin are on the same IP, port <code>8090</code>.</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2>Keep it running</h2>
+      <ul>
+        <li>Notification <strong>Battery</strong> action → allow, once.</li>
+        <li>Samsung: <em>Settings → Battery → Background usage limits</em> — keep the app out of “Sleeping apps”.</li>
+        <li>After a reboot PocketBase starts by itself; the panel needs the app opened once.</li>
+        <li>Partial wake lock keeps the CPU awake while the screen sleeps.</li>
+      </ul>
+    </section>
+
+    </div>
+
+    <div class="col">
+
+    <section>
+      <h2>Public tunnel (full edition)</h2>
+      <ol>
+        <li>Dashboard → <strong>Public tunnel</strong> → choose <strong>Quick</strong> or <strong>Named</strong>.</li>
+        <li><strong>Quick</strong>: pick <em>Control panel (8080)</em> or <em>Hosted site (8090)</em> → <strong>Start</strong>. Gives a new <code>https://….trycloudflare.com</code> each time.</li>
+        <li><strong>Named</strong>: Cloudflare → Zero Trust → Networks → Tunnels → Create → copy token → paste → <strong>Save</strong> → <strong>Start</strong>. Stable hostname, token stays on the phone.</li>
+        <li>Notification shows the live URL. <strong>Stop</strong> it when you are done.</li>
+      </ol>
+      <p style="margin:1.4mm 0 0"><span class="mono">cloudflared tunnel --url http://127.0.0.1:8090</span> is what Quick mode runs.</p>
+    </section>
+
+    <section>
+      <h2>Logs</h2>
+      <ul>
+        <li><strong>Logs</strong> tab → <strong>PocketBase</strong> or <strong>Tunnel</strong>.</li>
+        <li><strong>Refresh</strong> = last ~300 lines; it also updates while open.</li>
+        <li><strong>Restart</strong> restarts that process without using up its crash-restart budget.</li>
+        <li>On a PC: <code>adb logcat -s PocketServer PocketBase Cloudflared</code>.</li>
+      </ul>
+    </section>
+
+    </div>
+
+    <section class="wide">
+      <h2>When it does not work</h2>
+      <table>
+        <tr><th style="width:38%">Symptom</th><th>Do this</th></tr>
+        <tr><td>PIN rejected in the app</td><td>You are on a build before 1.1. Install 1.1. If you changed the PIN on an older install, clear app data.</td></tr>
+        <tr><td>Gate says “server is still starting”</td><td>Node takes a few seconds after launch; wait, or check the notification is present.</td></tr>
+        <tr><td>Laptop cannot reach the phone</td><td>Same Wi-Fi network, not guest Wi-Fi; check the address on the dashboard.</td></tr>
+        <tr><td>Pages die when the screen sleeps</td><td>Battery exemption is still off, or Samsung put the app to sleep.</td></tr>
+        <tr><td><code>INSTALL_FAILED_UPDATE_INCOMPATIBLE</code></td><td>Debug and release builds use different keys. Uninstall the old app first (data is lost).</td></tr>
+        <tr><td>Unknown path on :8090 shows the site</td><td>Normal — PocketBase falls back to <code>index.html</code> for single-page sites.</td></tr>
+      </table>
+    </section>
+
+    <section class="wide">
+      <div class="warn">
+        <strong>Security in one line</strong>
+        A tunnel puts your PIN gate on the public internet. Use a long PIN, prefer <em>Named</em> over <em>Quick</em> for anything long-lived, and stop the tunnel when you finish.
+      </div>
+    </section>
+
+  </div>
+
+  <footer>
+    <span>Pocket Server v1.1 · com.pocketserver.app</span>
+    <span>Panel 8080 · Site&nbsp;/&nbsp;DB 8090 · Admin 8090/_/</span>
+  </footer>
+
+</div>
+
+</body>
+</html>

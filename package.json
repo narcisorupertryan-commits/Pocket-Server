@@ -1,0 +1,30 @@
+{
+  "name": "pocket-server",
+  "version": "1.9.1",
+  "private": true,
+  "description": "Turn an Android phone into a portable Node.js + Express server with a Wi-Fi file portal, packaged as a Capacitor APK.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "postinstall": "npm --prefix public/nodejs install --omit=dev --no-audit --no-fund",
+    "build:css": "tailwindcss -i ./src/input.css -o ./public/app.css --minify",
+    "sync:ui": "npm run build:css && node scripts/sync-ui.mjs",
+    "start": "npm run sync:ui && node public/nodejs/server.js",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npm run sync:ui && npx cap sync android",
+    "apk:lite": "npm run cap:sync && cd android && ./gradlew assembleLiteDebug",
+    "apk:full": "npm run cap:sync && cd android && ./gradlew assembleFullDebug",
+    "apk:lite:release": "npm run cap:sync && cd android && ./gradlew assembleLiteRelease",
+    "apk:full:release": "npm run cap:sync && cd android && ./gradlew assembleFullRelease"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0",
+    "@capawesome/capacitor-nodejs": "^0.3.0",
+    "@tailwindcss/cli": "^4.1.0",
+    "tailwindcss": "^4.1.0"
+  },
+  "author": "RyanNars"
+}

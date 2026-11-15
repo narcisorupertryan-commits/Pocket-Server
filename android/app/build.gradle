@@ -1,0 +1,147 @@
+apply plugin: 'com.android.application'
+
+// ---------------------------------------------------------------------------
+// Release signing.
+//
+// android/keystore.properties (git-ignored) is read first, environment variables
+// second. See "Signing the release APK" in README.md.
+//
+//   storeFile=/abs/or/relative/path/to/pocketserver-release.jks
+//   storePassword=...
+//   keyAlias=pocketserver
+//   keyPassword=...
+//
+// Environment variables: POCKET_SERVER_KEYSTORE, POCKET_SERVER_STOREPASS,
+// POCKET_SERVER_KEYALIAS, POCKET_SERVER_KEYPASS
+// ---------------------------------------------------------------------------
+def signingProperties = new Properties()
+def signingPropertiesFile = rootProject.file("keystore.properties")
+if (signingPropertiesFile.exists()) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+}
+
+def signingValue = { String key, String envName, String fallback = null ->
+    String value = signingProperties.getProperty(key)
+    if (value == null || value.trim().isEmpty()) value = System.getenv(envName)
+    if (value == null || value.trim().isEmpty()) value = fallback
+    return value
+}
+
+def releaseStorePath = signingValue('storeFile', 'POCKET_SERVER_KEYSTORE')
+def releaseStoreFile = null
+if (releaseStorePath != null) {
+    // A relative storeFile is resolved against android/, not against app/.
+    // (file() inside a module script resolves against the module directory.)
+    def candidate = new File(releaseStorePath)
+    releaseStoreFile = candidate.isAbsolute() ? candidate : rootProject.file(releaseStorePath)
+}
+def hasReleaseSigning = releaseStoreFile != null && releaseStoreFile.exists()
+
+android {
+    namespace = "com.pocketserver.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.pocketserver.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 11
+        versionName "1.9.1"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            // nodejs-mobile ships one runtime per ABI (~40 MB each). arm64 covers the Galaxy A07.
+            abiFilters 'arm64-v8a'
+        }
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile releaseStoreFile
+                storePassword signingValue('storePassword', 'POCKET_SERVER_STOREPASS')
+                keyAlias signingValue('keyAlias', 'POCKET_SERVER_KEYALIAS', 'pocketserver')
+                keyPassword signingValue('keyPassword', 'POCKET_SERVER_KEYPASS')
+            }
+        }
+    }
+
+    // Two installable editions:
+    //   lite -> panel + PocketBase only
+    //   full -> adds cloudflared for the public tunnel
+    // libcloudflared.so lives in src/full/jniLibs, so lite simply does not ship it.
+    flavorDimensions "edition"
+    productFlavors {
+        lite {
+            dimension "edition"
+        }
+        full {
+            dimension "edition"
+        }
+    }
+
+    // Compress the native libraries instead of storing them raw. They are extracted on
+    // install, which cuts the APK roughly in half; the level 7 ELF alignment that
+    // Android 16 KB page-size devices need survives extraction.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// An unsigned release APK cannot be installed, so fail loudly instead of producing one.
+gradle.taskGraph.whenReady { graph ->
+    def buildingRelease = graph.allTasks.any { task ->
+        def name = task.name.toLowerCase()
+        (name.startsWith('assemble') || name.startsWith('bundle') || name.startsWith('package')) && name.contains('release')
+    }
+    if (buildingRelease && !hasReleaseSigning) {
+        throw new GradleException(
+            "No release signing key found.\n" +
+            "Create android/keystore.properties (see README: Signing the release APK), or set " +
+            "POCKET_SERVER_KEYSTORE / POCKET_SERVER_STOREPASS / POCKET_SERVER_KEYALIAS / POCKET_SERVER_KEYPASS."
+        )
+    }
+}
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hosting stress test</title>
+<style>
+  :root {
+    --bg: #080b12; --panel: #0f172a; --panel2: #131f36; --line: #1e2c48;
+    --text: #e6edf7; --muted: #8ba0bf; --dim: #5d7290;
+    --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --accent: #22d3ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: radial-gradient(1200px 600px at 15% -10%, #10203a 0%, var(--bg) 60%);
+    color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+    padding: 18px 16px 48px; max-width: 980px; margin-inline: auto; -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h1 span { color: var(--ok); }
+  .sub { color: var(--muted); font-size: 12.5px; margin: 0 0 16px; }
+  .sub code { color: var(--accent); font-size: 12.5px; word-break: break-all; }
+  .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%); border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .card h2 { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+  label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; letter-spacing: 0.04em; text-transform: uppercase; }
+  input { width: 100%; background: #0a1120; color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; font: inherit; font-size: 14px; }
+  input:focus { outline: 2px solid #1d6fa3; outline-offset: 1px; }
+  input[type=number] { text-align: right; }
+  .wide { grid-column: 1 / -1; }
+  .row { display: flex; gap: 10px; margin-top: 12px; align-items: stretch; }
+  button { font: inherit; font-weight: 600; border-radius: 10px; border: 1px solid var(--line); padding: 11px 18px; cursor: pointer; background: #16233c; color: var(--text); flex: 1; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  #start { background: #0b6b52; border-color: #128a6b; }
+  #stop { background: #6b1f2a; border-color: #8c2b39; }
+  button.ghost { flex: 0 0 auto; padding: 8px 13px; font-size: 12.5px; font-weight: 500; background: #142034; }
+  .stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+  .stat { background: #0a1120; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; }
+  .stat b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .stat span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat.good b { color: var(--ok); } .stat.bad b { color: var(--bad); } .stat.warn b { color: var(--warn); }
+  .strip { display: flex; gap: 1px; height: 34px; margin-top: 12px; align-items: flex-end; }
+  .strip i { flex: 1; min-width: 1px; border-radius: 1px 1px 0 0; background: var(--ok); }
+  .strip i.f { background: var(--bad); height: 100% !important; }
+  .strip i.s { background: var(--warn); }
+  #log { max-height: 260px; overflow: auto; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #log div { display: flex; gap: 8px; border-bottom: 1px solid #101b2d; padding: 1px 0; }
+  #log time { color: var(--dim); flex: 0 0 auto; }
+  #log .bad { color: var(--bad); } #log .warn { color: var(--warn); } #log .ok { color: var(--ok); }
+  #log .empty { color: var(--dim); }
+  #report { width: 100%; min-height: 168px; background: #0a1120; color: #cfe0f5; border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+  .note { color: var(--dim); font-size: 12px; line-height: 1.65; margin: 0; }
+  .note code { color: var(--accent); }
+  .hint { color: var(--warn); font-size: 12px; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+  <h1>Hosting stress test <span>·</span> pocket server</h1>
+  <p class="sub">Open this page from the server you want to test — <code id="origin"></code>. Requests go to the same origin, so a failure here is the failure your visitors see. Through the tunnel URL, it measures the tunnel end to end.</p>
+
+  <section class="card">
+    <h2>Target</h2>
+    <div class="grid">
+      <div class="wide">
+        <label for="target">URL to request</label>
+        <input id="target" spellcheck="false" autocapitalize="off" autocorrect="off">
+      </div>
+      <div><label for="concurrency">Parallel requests</label><input id="concurrency" type="number" min="1" max="32" step="1" value="4"></div>
+      <div><label for="duration">Duration (s)</label><input id="duration" type="number" min="5" max="3600" step="5" value="30"></div>
+      <div><label for="timeout">Timeout (ms)</label><input id="timeout" type="number" min="500" max="120000" step="500" value="10000"></div>
+      <div><label for="pause">Pause between (ms)</label><input id="pause" type="number" min="0" max="10000" step="50" value="0"></div>
+    </div>
+    <div class="row">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+    <p class="hint" id="hint" hidden></p>
+  </section>
+
+  <section class="card">
+    <h2>Live result</h2>
+    <div class="stats">
+      <div class="stat"><b id="s-total">0</b><span>requests</span></div>
+      <div class="stat good"><b id="s-ok">0</b><span>succeeded</span></div>
+      <div class="stat bad"><b id="s-fail">0</b><span>failed</span></div>
+      <div class="stat"><b id="s-rps">0</b><span>req/s</span></div>
+      <div class="stat"><b id="s-p50">—</b><span>p50 ms</span></div>
+      <div class="stat"><b id="s-p95">—</b><span>p95 ms</span></div>
+      <div class="stat"><b id="s-p99">—</b><span>p99 ms</span></div>
+      <div class="stat"><b id="s-mib">0</b><span>MiB received</span></div>
+      <div class="stat warn"><b id="s-blackout">0</b><span>blackouts &gt; 1 s</span></div>
+      <div class="stat warn"><b id="s-longest">0</b><span>longest gap ms</span></div>
+      <div class="stat"><b id="s-recover">0</b><span>recoveries</span></div>
+      <div class="stat"><b id="s-elapsed">0:00</b><span>elapsed</span></div>
+    </div>
+    <div class="strip" id="strip" aria-hidden="true"></div>
+    <p class="note" id="classes" style="margin-top:10px">No failures yet.</p>
+  </section>
+
+  <section class="card">
+    <h2>Timeline <button class="ghost" id="clear">clear</button></h2>
+    <div id="log"><div class="empty">Nothing yet — press Start.</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Report <button class="ghost" id="copy">copy</button></h2>
+    <textarea id="report" spellcheck="false" readonly placeholder="The summary appears here when a run ends."></textarea>
+    <p class="note" style="margin-top:10px">
+      Browsers reuse connections and cache DNS, so this measures the request path your visitors actually take — not a
+      per-request DNS lookup. A tunnel flap shows up as failed requests, mid-body drops, or a blackout gap.
+      Keep this tab in the foreground: Android throttles timers in background tabs and the numbers drift.
+    </p>
+  </section>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+  const STORE_KEY = 'host-stress-target';
+  const DEFAULT_TARGET = location.origin + location.pathname.replace(/[^/]*$/, '') + 'index.html';
+  const MAX_LATENCIES = 50000;
+  const MAX_LOG = 220;
+  const STRIP = 150;
+
+  $('origin').textContent = location.origin;
+
+  const settings = { target: DEFAULT_TARGET, concurrency: 4, duration: 30, timeout: 10000, pause: 0 };
+  try {
+    Object.assign(settings, JSON.parse(localStorage.getItem(STORE_KEY) || '{}'));
+  } catch (error) {
+    /* first visit or storage blocked */
+  }
+
+  let run = null;
+  let renderTimer = 0;
+
+  function percentile(values, p) {
+    if (!values.length) return 0;
+    const sorted = values.slice().sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
+  }
+
+  function transportClass(ms) {
+    if (!navigator.onLine) return 'device offline';
+    if (ms < 150) return 'rejected instantly (DNS or refused)';
+    if (ms < 5000) return 'dropped mid-request';
+    return 'stalled until timeout';
+  }
+
+  function withBuster(url) {
+    const copy = new URL(url);
+    copy.searchParams.set('__stress', Math.random().toString(36).slice(2, 10));
+    return copy.href;
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function logLine(kind, text) {
+    if (!run) return;
+    const entry = { at: new Date(), kind, text };
+    run.events.push(entry);
+    if (run.events.length > MAX_LOG) run.events.shift();
+    const box = $('log');
+    if (box.firstElementChild && box.firstElementChild.classList.contains('empty')) box.innerHTML = '';
+    const row = document.createElement('div');
+    const time = document.createElement('time');
+    time.textContent = entry.at.toLocaleTimeString([], { hour12: false });
+    const body = document.createElement('span');
+    body.className = kind;
+    body.textContent = text;
+    row.append(time, body);
+    box.append(row);
+    while (box.children.length > MAX_LOG) box.firstElementChild.remove();
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function pushStrip(ok) {
+    if (!run) return;
+    run.strip.push(ok ? 1 : 0);
+    if (run.strip.length > STRIP) run.strip.shift();
+  }
+
+  function succeed(r, ms, status, bytes) {
+    if (!r.running) return;
+    const now = performance.now();
+    r.total += 1;
+    r.ok += 1;
+    if (bytes) r.bytes += bytes;
+    if (r.latencies.length < MAX_LATENCIES) r.latencies.push(ms);
+    pushStrip(true);
+
+    if (r.lastOkAt !== null) {
+      const gap = now - r.lastOkAt;
+      if (gap > 1000) {
+        r.blackouts += 1;
+        if (gap > r.maxGap) r.maxGap = gap;
+        logLine('warn', `blackout ${Math.round(gap)} ms before this success`);
+      }
+    }
+    if (r.streakStart !== null) {
+      r.recoveries += 1;
+      logLine('ok', `recovered after ${Math.round(now - r.streakStart)} ms and ${r.streak} failure(s)`);
+      r.streakStart = null;
+      r.streak = 0;
+    }
+    r.lastOkAt = now;
+    if (r.attempt % 50 === 0 || ms > r.timeout * 0.6) {
+      logLine('ok', `ok ${status} ${Math.round(ms)} ms${bytes ? ` · ${(bytes / 1024).toFixed(1)} KiB` : ''}`);
+    }
+    return true;
+  }
+
+  function fail(r, ms, label, detail) {
+    if (!r.running) return false;
+    const now = performance.now();
+    r.total += 1;
+    r.fail += 1;
+    r.classes[label] = (r.classes[label] || 0) + 1;
+    pushStrip(false);
+    if (r.streakStart === null) {
+      r.streakStart = now;
+      r.streak = 0;
+    }
+    r.streak += 1;
+    logLine('bad', `${label} · ${Math.round(ms)} ms${detail ? ` · ${detail}` : ''}`);
+    return false;
+  }
+
+  async function probe(r) {
+    const url = withBuster(r.url);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), r.timeout);
+    r.controllers.add(controller);
+    const started = performance.now();
+    r.attempt += 1;
+    const sameOrigin = new URL(url).origin === location.origin;
+
+    try {
+      const response = await fetch(url, {
+        cache: 'no-store',
+        signal: controller.signal,
+        mode: sameOrigin ? 'cors' : 'no-cors',
+        redirect: 'follow',
+        credentials: 'same-origin',
+      });
+
+      if (response.type === 'opaque') {
+        succeed(r, performance.now() - started, 'opaque', 0);
+      } else {
+        const buffer = await response.arrayBuffer();
+        const ms = performance.now() - started;
+        if (response.ok) {
+          succeed(r, ms, response.status, buffer.byteLength);
+        } else {
+          return fail(r, ms, `HTTP ${response.status}`, response.statusText || 'server rejected the request');
+        }
+      }
+    } catch (error) {
+      const ms = performance.now() - started;
+      if (!r.running) return; // our own abort when the run ends, not a visitor-facing failure
+      if (error && error.name === 'AbortError') return fail(r, ms, 'timeout', `no response within ${r.timeout} ms`);
+      return fail(r, ms, transportClass(ms), (error && error.message) || 'request failed');
+    } finally {
+      clearTimeout(timer);
+      r.controllers.delete(controller);
+    }
+  }
+
+  async function worker(r) {
+    while (r.running && performance.now() < r.endsAt) {
+      const ok = await probe(r);
+      // A dead host fails in a few milliseconds; without this the loop would fire
+      // thousands of requests a second and read as a flood on the resolver.
+      if (ok === false) await sleep(Math.max(250, r.pause));
+      else if (r.pause) await sleep(r.pause);
+    }
+    r.active -= 1;
+    if (r.active === 0 && r.running) finish(r, 'duration reached');
+  }
+
+  function start() {
+    if (run && run.running) return;
+
+    let url;
+    try {
+      url = new URL($('target').value.trim() || DEFAULT_TARGET, location.href);
+    } catch (error) {
+      $('hint').hidden = false;
+      $('hint').textContent = 'That URL is not valid. Use a full address such as http://192.168.1.20:8090/index.html';
+      return;
+    }
+    $('hint').hidden = true;
+
+    const concurrency = clamp(Number($('concurrency').value) || 4, 1, 32);
+    const duration = clamp(Number($('duration').value) || 30, 5, 3600);
+    const timeout = clamp(Number($('timeout').value) || 10000, 500, 120000);
+    const pause = clamp(Number($('pause').value) || 0, 0, 10000);
+
+    $('concurrency').value = concurrency;
+    $('duration').value = duration;
+    $('timeout').value = timeout;
+    $('pause').value = pause;
+
+    run = {
+      url: url.href, concurrency, timeout, pause,
+      running: true, active: concurrency, total: 0, attempt: 0, ok: 0, fail: 0, bytes: 0,
+      latencies: [], classes: {}, strip: [], events: [],
+      lastOkAt: null, maxGap: 0, blackouts: 0, recoveries: 0, streakStart: null, streak: 0,
+      controllers: new Set(), startedAt: Date.now(), endsAt: performance.now() + duration * 1000,
+    };
+
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({ target: url.href, concurrency, duration, timeout, pause }));
+    } catch (error) {
+      /* private mode */
+    }
+
+    if (url.origin !== location.origin) {
+      $('hint').hidden = false;
+      $('hint').textContent =
+        'Different origin: requests run in no-cors mode, so status codes and sizes are hidden, but connection and DNS failures still count.';
+    }
+
+    $('log').innerHTML = '';
+    logLine('ok', `test started · ${url.href} · ${concurrency} parallel · ${duration} s · timeout ${timeout} ms`);
+
+    $('start').disabled = true;
+    $('stop').disabled = false;
+    $('report').value = '';
+
+    clearInterval(renderTimer);
+    renderTimer = setInterval(() => {
+      render();
+      if (run && run.running && performance.now() > run.endsAt) finish(run, 'duration reached');
+    }, 250);
+
+    for (let index = 0; index < concurrency; index += 1) worker(run);
+    render();
+  }
+
+  function finish(r, reason) {
+    if (!r.running) return;
+    r.running = false;
+    clearInterval(renderTimer);
+    for (const controller of r.controllers) {
+      try { controller.abort(); } catch (error) { /* already settled */ }
+    }
+    r.controllers.clear();
+
+    $('start').disabled = false;
+    $('stop').disabled = true;
+    render();
+
+    const elapsed = (Date.now() - r.startedAt) / 1000;
+    const failures = Object.entries(r.classes).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name} × ${count}`);
+    const lines = [
+      'Pocket Server — hosting stress test',
+      `when: ${new Date().toISOString()} (${reason})`,
+      `page served from: ${location.origin}`,
+      `target: ${r.url} (${new URL(r.url).origin === location.origin ? 'same origin' : 'cross origin, no-cors'})`,
+      `client: ${navigator.userAgent}`,
+      `connection: ${navigator.connection ? `${navigator.connection.effectiveType || '?'} · ${navigator.connection.downlink || '?'} Mb/s` : 'unknown'}`,
+      `settings: ${r.concurrency} parallel · timeout ${r.timeout} ms · pause ${r.pause} ms`,
+      '',
+      `duration: ${elapsed.toFixed(1)} s`,
+      `requests: ${r.total} → ${r.ok} ok, ${r.fail} failed (${(100 * r.ok / Math.max(1, r.total)).toFixed(1)}% ok)`,
+      `throughput: ${(r.total / Math.max(0.1, elapsed)).toFixed(1)} req/s · ${(r.bytes / 1048576).toFixed(2)} MiB received`,
+      `latency: p50 ${Math.round(percentile(r.latencies, 50))} ms · p95 ${Math.round(percentile(r.latencies, 95))} ms · p99 ${Math.round(percentile(r.latencies, 99))} ms`,
+      `blackouts > 1 s: ${r.blackouts}${r.blackouts ? ` · longest ${Math.round(r.maxGap)} ms` : ''}`,
+      `recoveries after failures: ${r.recoveries}`,
+      `failures: ${failures.length ? failures.join(', ') : 'none'}`,
+    ];
+
+    if (r.events.some((event) => event.kind === 'bad')) {
+      lines.push('', 'failure timeline:');
+      for (const event of r.events.filter((item) => item.kind !== 'ok').slice(-25)) {
+        lines.push(`  ${event.at.toLocaleTimeString([], { hour12: false })}  ${event.text}`);
+      }
+    }
+
+    $('report').value = lines.join('\n');
+    logLine(r.fail ? 'warn' : 'ok', `finished · ${r.ok} ok, ${r.fail} failed in ${elapsed.toFixed(1)} s`);
+  }
+
+  function stop() {
+    if (run && run.running) finish(run, 'stopped by hand');
+  }
+
+  function render() {
+    if (!run) return;
+    const elapsed = (Date.now() - run.startedAt) / 1000;
+    $('s-total').textContent = run.total;
+    $('s-ok').textContent = run.ok;
+    $('s-fail').textContent = run.fail;
+    $('s-rps').textContent = (run.total / Math.max(0.2, elapsed)).toFixed(1);
+    $('s-p50').textContent = run.latencies.length ? Math.round(percentile(run.latencies, 50)) : '—';
+    $('s-p95').textContent = run.latencies.length ? Math.round(percentile(run.latencies, 95)) : '—';
+    $('s-p99').textContent = run.latencies.length ? Math.round(percentile(run.latencies, 99)) : '—';
+    $('s-mib').textContent = (run.bytes / 1048576).toFixed(1);
+    $('s-blackout').textContent = run.blackouts;
+    $('s-longest').textContent = Math.round(run.maxGap);
+    $('s-recover').textContent = run.recoveries;
+    $('s-elapsed').textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, '0')}`;
+
+    const classes = Object.entries(run.classes).sort((a, b) => b[1] - a[1]);
+    $('classes').textContent = classes.length
+      ? classes.map(([name, count]) => `${name} × ${count}`).join('   ·   ')
+      : 'No failures yet.';
+
+    const strip = $('strip');
+    strip.textContent = '';
+    const worst = Math.max(1, ...run.strip);
+    for (const value of run.strip) {
+      const bar = document.createElement('i');
+      bar.style.height = `${Math.max(12, Math.round((value / worst) * 100))}%`;
+      if (!value) bar.className = 'f';
+      strip.append(bar);
+    }
+  }
+
+  $('start').addEventListener('click', start);
+  $('stop').addEventListener('click', stop);
+  $('clear').addEventListener('click', () => {
+    $('log').innerHTML = '<div class="empty">Nothing yet — press Start.</div>';
+    if (run) run.events = [];
+  });
+  $('copy').addEventListener('click', async () => {
+    const text = $('report').value;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      $('copy').textContent = 'copied';
+    } catch (error) {
+      $('report').select();
+      document.execCommand && document.execCommand('copy');
+      $('copy').textContent = 'copied';
+    }
+    setTimeout(() => { $('copy').textContent = 'copy'; }, 1600);
+  });
+
+  window.addEventListener('offline', () => logLine('bad', 'the device reports it is offline'));
+  window.addEventListener('online', () => logLine('warn', 'the device reports it is back online'));
+
+  $('target').value = settings.target || DEFAULT_TARGET;
+  $('concurrency').value = settings.concurrency;
+  $('duration').value = settings.duration;
+  $('timeout').value = settings.timeout;
+  $('pause').value = settings.pause;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Pocket Server</title>
+    <link rel="icon" href="favicon.png" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
+    <link rel="stylesheet" href="app.css" />
+    <!-- Blocking, external: resolves the theme before the body paints. -->
+    <script src="theme-init.js"></script>
+  </head>
+  <body class="min-h-dvh bg-slate-950 font-sans text-slate-100 antialiased selection:bg-emerald-400/30">
+    <div class="mx-auto flex min-h-dvh w-full max-w-2xl flex-col">
+      <!-- Header -->
+      <header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/90 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur">
+        <div class="flex items-center gap-3">
+          <img
+            src="logo.png"
+            alt="Pocket Server"
+            width="40"
+            height="40"
+            class="size-10 shrink-0 rounded-xl object-contain"
+          />
+          <div class="min-w-0 flex-1">
+            <h1 class="truncate text-base font-semibold tracking-tight">Pocket Server</h1>
+            <p class="flex items-center gap-1.5 truncate text-xs text-slate-400">
+              <span id="server-state-dot" class="inline-block size-1.5 rounded-full bg-slate-500"></span>
+              <span id="server-state-text">connecting…</span>
+            </p>
+          </div>
+          <button
+            id="theme-toggle"
+            type="button"
+            aria-label="Theme"
+            title="Theme: system"
+            class="ps-icon-btn shrink-0"
+          >
+            <svg
+              id="theme-icon-system"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="size-4"
+            >
+              <rect x="2.5" y="4" width="19" height="12.5" rx="2" />
+              <path d="M8.5 20.5h7M12 16.5v4" />
+            </svg>
+            <svg
+              id="theme-icon-light"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="hidden size-4"
+            >
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+            </svg>
+            <svg
+              id="theme-icon-dark"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class="hidden size-4"
+            >
+              <path d="M21 12.8A8.6 8.6 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8Z" />
+            </svg>
+          </button>
+          <button
+            id="logout"
+            type="button"
+            class="hidden rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+          >
+            Lock
+          </button>
+          <button
+            id="power-toggle"
+            type="button"
+            role="switch"
+            aria-checked="true"
+            aria-label="Servers"
+            title="Servers on — tap to stop"
+            class="ps-switch shrink-0"
+          >
+            <span class="knob"></span>
+          </button>
+        </div>
+
+        <!-- Tabs -->
+        <nav class="mt-3 grid grid-cols-3 gap-1 rounded-xl bg-slate-900 p-1 ring-1 ring-slate-800" role="tablist">
+          <button
+            id="tab-btn-dashboard"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="tab-dashboard"
+            class="rounded-lg px-2 py-2 text-sm font-medium transition"
+          >
+            Dashboard
+          </button>
+          <button
+            id="tab-btn-files"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="tab-files"
+            class="rounded-lg px-2 py-2 text-sm font-medium transition"
+          >
+            Files
+          </button>
+          <button
+            id="tab-btn-logs"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="tab-logs"
+            class="rounded-lg px-2 py-2 text-sm font-medium transition"
+          >
+            Logs
+          </button>
+        </nav>
+      </header>
+
+      <main class="flex-1 px-4 pb-10 pt-4">
+        <!-- ============ Dashboard ============ -->
+        <section id="tab-dashboard" role="tabpanel" aria-labelledby="tab-btn-dashboard" class="space-y-4">
+          <!-- Shown only when the panel on 8080 does not answer. PocketBase runs as a
+               separate native process, so it can still reply and tell us which half failed. -->
+          <div id="offline-help" class="hidden rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-xs font-medium uppercase tracking-widest text-amber-300">Panel not reachable</p>
+                <p id="offline-summary" class="mt-1 text-sm text-slate-200">Checking the phone…</p>
+              </div>
+              <button
+                id="offline-retry"
+                type="button"
+                class="shrink-0 rounded-lg border border-amber-500/40 px-2.5 py-1.5 text-xs font-medium text-amber-200 transition hover:bg-amber-500/15"
+              >
+                Retry
+              </button>
+            </div>
+            <dl class="mt-3 space-y-2 text-xs">
+              <div>
+                <dt class="text-slate-400">PocketBase on 8090</dt>
+                <dd id="offline-pocketbase" class="mt-0.5 font-mono text-slate-300">checking…</dd>
+              </div>
+              <div>
+                <dt class="text-slate-400">Node boot status</dt>
+                <dd id="offline-boot" class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] text-slate-300">—</dd>
+              </div>
+              <div>
+                <dt class="text-slate-400">Node boot error</dt>
+                <dd id="offline-error" class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] text-rose-300">—</dd>
+              </div>
+            </dl>
+            <p class="mt-3 text-[11px] text-slate-400">
+              The panel is an embedded Node runtime on port 8080; PocketBase is a separate native
+              process on 8090. If PocketBase answers but the panel does not, the Node runtime is the
+              half that failed.
+            </p>
+          </div>
+
+          <div class="overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/40 p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <p class="text-xs font-medium uppercase tracking-widest text-slate-400">Server status</p>
+                <p id="status-headline" class="mt-1 text-2xl font-semibold tracking-tight text-white">—</p>
+              </div>
+              <span
+                id="status-badge"
+                class="rounded-full border border-slate-700 px-2.5 py-1 text-xs font-medium text-slate-300"
+                >offline</span
+              >
+            </div>
+            <dl class="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div class="rounded-xl bg-slate-950/60 p-3 ring-1 ring-slate-800">
+                <dt class="text-xs text-slate-400">Active memory</dt>
+                <dd id="metric-memory" class="mt-1 font-mono text-lg text-emerald-300">—</dd>
+              </div>
+              <div class="rounded-xl bg-slate-950/60 p-3 ring-1 ring-slate-800">
+                <dt class="text-xs text-slate-400">Uptime</dt>
+                <dd id="metric-uptime" class="mt-1 font-mono text-lg text-emerald-300">—</dd>
+              </div>
+              <div class="rounded-xl bg-slate-950/60 p-3 ring-1 ring-slate-800">
+                <dt class="text-xs text-slate-400">System load (1m / 5m)</dt>
+                <dd id="metric-load" class="mt-1 font-mono text-lg text-slate-200">—</dd>
+              </div>
+              <div class="rounded-xl bg-slate-950/60 p-3 ring-1 ring-slate-800">
+                <dt class="text-xs text-slate-400">Hosted files</dt>
+                <dd id="metric-files" class="mt-1 font-mono text-lg text-slate-200">—</dd>
+              </div>
+            </dl>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <h2 class="text-sm font-semibold text-white">Open from another device</h2>
+            <p class="mt-1 text-xs leading-relaxed text-slate-400">
+              Connect the PC or tablet to the same Wi-Fi, then open one of these addresses.
+            </p>
+            <div id="address-list" class="mt-3 space-y-2"></div>
+            <button
+              id="copy-address"
+              type="button"
+              class="mt-3 w-full rounded-xl bg-emerald-500 px-3 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 active:scale-[0.99]"
+            >
+              Copy server address
+            </button>
+            <p id="copy-hint" class="mt-2 hidden text-center text-xs text-emerald-300">Copied to clipboard</p>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <h2 class="text-sm font-semibold text-white">Websites &amp; database</h2>
+            <p class="mt-1 text-xs leading-relaxed text-slate-400">
+              PocketBase serves every file in the public folder as a website and runs the SQLite database, user accounts and
+              collections.
+            </p>
+            <div class="mt-3 space-y-2">
+              <div class="flex items-center gap-2">
+                <a
+                  id="site-link"
+                  href="#"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-xl bg-slate-950/70 px-3 py-2.5 ring-1 ring-slate-800 transition hover:ring-emerald-500/50"
+                >
+                  <span class="min-w-0">
+                    <span class="block text-[11px] text-slate-500">Static site</span>
+                    <span id="site-url" class="block truncate font-mono text-sm text-emerald-300">—</span>
+                  </span>
+                  <span class="text-[11px] font-medium text-slate-400">Open</span>
+                </a>
+                <button
+                  id="site-copy"
+                  type="button"
+                  class="shrink-0 rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-500 hover:text-white"
+                >
+                  Copy
+                </button>
+              </div>
+              <div class="flex items-center gap-2">
+                <a
+                  id="admin-link"
+                  href="#"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-xl bg-slate-950/70 px-3 py-2.5 ring-1 ring-slate-800 transition hover:ring-sky-500/50"
+                >
+                  <span class="min-w-0">
+                    <span class="block text-[11px] text-slate-500">Database &amp; users</span>
+                    <span id="admin-url" class="block truncate font-mono text-sm text-sky-300">—</span>
+                  </span>
+                  <span class="text-[11px] font-medium text-slate-400">Admin</span>
+                </a>
+                <button
+                  id="admin-copy"
+                  type="button"
+                  class="shrink-0 rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-500 hover:text-white"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <p class="mt-2 text-xs text-slate-500">PocketBase 0.23+ no longer creates the first account just by opening Admin — use the card below.</p>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <h2 class="text-sm font-semibold text-white">PocketBase account</h2>
+                <p id="superuser-state" class="mt-1 text-xs leading-relaxed text-slate-400">Checking…</p>
+              </div>
+              <span
+                id="superuser-badge"
+                class="shrink-0 rounded-full border border-slate-700 px-2.5 py-1 text-[11px] font-medium text-slate-300"
+                >—</span
+              >
+            </div>
+
+            <div id="superuser-installer" class="mt-3 hidden rounded-xl bg-slate-950/70 p-3 ring-1 ring-amber-500/30">
+              <p class="text-[11px] leading-relaxed text-amber-200/90">
+                PocketBase printed a one-time installer link. If the form below does not work, open this link — it is valid
+                for 30 minutes.
+              </p>
+              <div class="mt-2 flex items-center gap-2">
+                <a
+                  id="superuser-installer-link"
+                  href="#"
+                  target="_blank"
+                  rel="noreferrer"
+                  class="min-w-0 flex-1 truncate rounded-lg bg-slate-900 px-2.5 py-2 font-mono text-[11px] text-sky-300 ring-1 ring-slate-800"
+                  >—</a
+                >
+                <button
+                  id="superuser-installer-copy"
+                  type="button"
+                  class="shrink-0 rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300"
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+
+            <form id="superuser-form" class="mt-3 space-y-2">
+              <input
+                id="superuser-email"
+                type="email"
+                autocomplete="username"
+                placeholder="admin@example.com"
+                class="w-full rounded-xl bg-slate-950/70 px-3 py-2.5 text-sm text-white ring-1 ring-slate-800 placeholder:text-slate-600 focus:outline-none focus:ring-sky-500/60"
+              />
+              <input
+                id="superuser-password"
+                type="password"
+                autocomplete="new-password"
+                placeholder="Password (8+ characters)"
+                class="w-full rounded-xl bg-slate-950/70 px-3 py-2.5 text-sm text-white ring-1 ring-slate-800 placeholder:text-slate-600 focus:outline-none focus:ring-sky-500/60"
+              />
+              <button
+                id="superuser-save"
+                type="submit"
+                class="w-full rounded-xl bg-sky-500 px-3 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 active:scale-[0.99] disabled:opacity-50"
+              >
+                Create superuser
+              </button>
+            </form>
+            <p id="superuser-hint" class="mt-2 text-xs text-slate-500">
+              Stored in PocketBase, separate from the panel PIN. PocketBase stops for a second while the account is written.
+            </p>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-sm font-semibold text-white">Backups</h2>
+              <button
+                id="backup-now"
+                type="button"
+                class="rounded-lg border border-slate-700 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+              >
+                Backup now
+              </button>
+            </div>
+            <p id="backup-state" class="mt-1 text-xs leading-relaxed text-slate-400">Checking…</p>
+            <ul id="backup-list" class="mt-2 space-y-1"></ul>
+            <div class="mt-3 flex items-center gap-2">
+              <button
+                id="integrity-check"
+                type="button"
+                class="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1 text-[11px] font-medium text-slate-300 transition hover:border-slate-500 hover:text-white disabled:opacity-50"
+              >
+                Verify files
+              </button>
+              <p id="integrity-result" class="min-w-0 flex-1 truncate text-[11px] text-slate-500">
+                Checks hosted files against their recorded SHA-256.
+              </p>
+            </div>
+          </div>
+
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-sm font-semibold text-white">Public tunnel</h2>
+              <span id="tunnel-badge" class="rounded-full border border-slate-700 px-2.5 py-1 text-[11px] font-medium text-slate-300">
+                stopped
+              </span>
+            </div>
+            <p class="mt-1 text-xs leading-relaxed text-slate-400">
+              Routes this server to a temporary <span class="font-mono">trycloudflare.com</span> HTTPS address so it is reachable
+              outside your Wi-Fi.
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <select
+                id="tunnel-mode"
+                class="w-28 shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-white outline-none focus:border-emerald-500"
+              >
+                <option value="quick">Quick</option>
+                <option value="named">Named</option>
+              </select>
+              <input
+                id="tunnel-token"
+                type="password"
+                autocomplete="off"
+                placeholder="Cloudflare tunnel token"
+                class="hidden min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white outline-none focus:border-emerald-500"
+              />
+              <button
+                id="tunnel-token-save"
+                type="button"
+                class="hidden shrink-0 rounded-lg border border-slate-700 px-2 py-2 text-[11px] font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+              >
+                Save
+              </button>
+            </div>
+            <p id="tunnel-token-note" class="mt-1 hidden text-[11px] text-slate-500">
+              Stored on this device only. The public hostname is whatever you point at this server in the Cloudflare dashboard.
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <select
+                id="tunnel-target"
+                class="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white outline-none focus:border-emerald-500"
+              >
+                <option id="tunnel-target-panel" value="panel">Control panel (8080)</option>
+                <option value="site">Hosted site (8090)</option>
+              </select>
+              <button
+                id="tunnel-toggle"
+                type="button"
+                class="shrink-0 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-white"
+              >
+                Start
+              </button>
+            </div>
+            <div id="tunnel-url-row" class="mt-2 hidden items-center gap-2">
+              <a
+                id="tunnel-url"
+                href="#"
+                target="_blank"
+                rel="noreferrer"
+                class="min-w-0 flex-1 truncate rounded-lg bg-slate-950/70 px-3 py-2 font-mono text-xs text-emerald-300 ring-1 ring-slate-800"
+                >—</a
+              >
+              <button
+                id="tunnel-copy"
+                type="button"
+                class="shrink-0 rounded-lg border border-slate-700 px-2 py-1.5 text-[11px] text-slate-300 transition hover:border-slate-500"
+              >
+                Copy
+              </button>
+            </div>
+            <p id="tunnel-message" class="mt-2 text-xs text-slate-500">
+              Anyone with the address can reach this server. Keep the PIN strong.
+            </p>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
+            <h2 class="text-sm font-semibold text-white">Security</h2>
+            <p id="pin-warning" class="mt-1 hidden rounded-lg bg-amber-500/10 px-2.5 py-2 text-xs text-amber-300 ring-1 ring-amber-500/30">
+              This server still uses the default PIN (1234). Change it before using a shared network.
+            </p>
+            <form id="pin-form" class="mt-2 flex items-end gap-2">
+              <label class="min-w-0 flex-1 text-xs text-slate-400">
+                Current PIN
+                <input
+                  id="pin-current"
+                  type="password"
+                  inputmode="numeric"
+                  autocomplete="current-password"
+                  maxlength="8"
+                  class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-emerald-500"
+                />
+              </label>
+              <label class="min-w-0 flex-1 text-xs text-slate-400">
+                New PIN
+                <input
+                  id="pin-next"
+                  type="password"
+                  inputmode="numeric"
+                  autocomplete="new-password"
+                  maxlength="8"
+                  class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-sm text-white outline-none focus:border-emerald-500"
+                />
+              </label>
+              <button
+                type="submit"
+                class="shrink-0 rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white"
+              >
+                Save
+              </button>
+            </form>
+            <p class="mt-2 text-xs text-slate-500">4–8 digits. Every device has to unlock again after a change.</p>
+          </div>
+
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <h2 class="text-sm font-semibold text-white">Runtime</h2>
+            <dl class="mt-2 space-y-1.5 text-xs">
+              <div class="flex justify-between gap-3">
+                <dt class="text-slate-400">Node.js</dt>
+                <dd id="runtime-node" class="truncate font-mono text-slate-300">—</dd>
+              </div>
+              <div class="flex justify-between gap-3">
+                <dt class="text-slate-400">Platform</dt>
+                <dd id="runtime-platform" class="truncate font-mono text-slate-300">—</dd>
+              </div>
+              <div class="flex justify-between gap-3">
+                <dt class="text-slate-400">Panel UI</dt>
+                <dd id="runtime-ui" class="truncate font-mono text-slate-300">—</dd>
+              </div>
+              <div class="flex justify-between gap-3">
+                <dt class="text-slate-400">Listen address</dt>
+                <dd id="runtime-port" class="truncate font-mono text-slate-300">—</dd>
+              </div>
+            </dl>
+          </div>
+        </section>
+
+        <!-- ============ File manager ============ -->
+        <section id="tab-files" role="tabpanel" aria-labelledby="tab-btn-files" class="hidden space-y-4">
+          <div
+            id="dropzone"
+            tabindex="0"
+            role="button"
+            aria-label="Choose files to upload"
+            class="group flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-700 bg-slate-900/40 px-4 py-8 text-center transition hover:border-emerald-500/70 hover:bg-slate-900"
+          >
+            <div class="grid size-11 place-items-center rounded-xl bg-slate-800 text-emerald-300 transition group-hover:bg-emerald-500/15">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="size-6">
+                <path d="M12 16V4m0 0L8 8m4-4 4 4" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" stroke-linecap="round" />
+              </svg>
+            </div>
+            <p class="mt-3 text-sm font-medium text-white">Drop files here</p>
+            <p class="mt-1 text-xs text-slate-400">or tap to choose from this device</p>
+            <input id="file-input" type="file" multiple class="hidden" />
+          </div>
+
+          <div id="upload-progress" class="hidden rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+            <div class="flex items-center justify-between text-xs">
+              <span id="upload-label" class="text-slate-300">Uploading…</span>
+              <span id="upload-percent" class="font-mono text-emerald-300">0%</span>
+            </div>
+            <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+              <div id="upload-bar" class="h-full w-0 rounded-full bg-emerald-400 transition-[width]"></div>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3">
+            <p id="files-summary" class="text-xs text-slate-400">No files yet</p>
+            <button
+              id="files-refresh"
+              type="button"
+              class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+            >
+              Refresh
+            </button>
+          </div>
+
+          <ul id="files-list" class="space-y-2"></ul>
+
+          <div id="files-empty" class="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center">
+            <p class="text-sm font-medium text-slate-300">Nothing hosted yet</p>
+            <p class="mt-1 text-xs text-slate-500">
+              Uploads land in the public folder and are published as a website on port 8090 — tap a file name to copy its URL.
+            </p>
+          </div>
+        </section>
+
+        <!-- ============ Diagnostics ============ -->
+        <section id="tab-logs" role="tabpanel" aria-labelledby="tab-btn-logs" class="hidden space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <div class="flex gap-1 rounded-xl bg-slate-900 p-1 ring-1 ring-slate-800">
+              <button id="log-src-pocketbase" type="button" class="rounded-lg px-3 py-1.5 text-xs font-medium transition">
+                PocketBase
+              </button>
+              <button id="log-src-cloudflared" type="button" class="rounded-lg px-3 py-1.5 text-xs font-medium transition">
+                Tunnel
+              </button>
+            </div>
+            <div class="flex gap-2">
+              <button
+                id="logs-refresh"
+                type="button"
+                class="rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+              >
+                Refresh
+              </button>
+              <button
+                id="logs-restart"
+                type="button"
+                class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-300 transition hover:bg-amber-500/20"
+              >
+                Restart
+              </button>
+            </div>
+          </div>
+
+          <pre
+            id="logs-output"
+            class="h-[60vh] overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-slate-800 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-300"
+          >Loading…</pre>
+
+          <p id="logs-meta" class="text-[11px] text-slate-500">—</p>
+        </section>
+      </main>
+
+      <footer class="px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-2 text-center text-[11px] leading-relaxed text-slate-600">
+        Runs entirely on this phone · no internet needed
+      </footer>
+    </div>
+
+    <!-- PIN gate -->
+    <div id="gate" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-950/95 px-6 backdrop-blur-sm">
+      <div class="w-full max-w-xs">
+        <img src="logo.png" alt="Pocket Server" width="88" height="88" class="mx-auto size-20 object-contain" />
+        <h2 class="mt-4 text-center text-lg font-semibold text-white">Enter the server PIN</h2>
+        <p class="mt-1 text-center text-xs text-slate-400">The PIN is shown in the app settings on the phone.</p>
+        <form id="gate-form" class="mt-5 space-y-3">
+          <input
+            id="gate-pin"
+            type="password"
+            inputmode="numeric"
+            autocomplete="current-password"
+            maxlength="8"
+            required
+            class="w-full rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-center font-mono text-lg tracking-[0.4em] text-white outline-none focus:border-emerald-500"
+            placeholder="••••"
+          />
+          <button
+            type="submit"
+            class="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 active:scale-[0.99]"
+          >
+            Unlock
+          </button>
+          <p id="gate-error" class="hidden text-center text-xs text-rose-400"></p>
+        </form>
+        <p id="gate-hint" class="mt-4 text-center text-xs text-slate-600">Default PIN is 1234 — change it after unlocking.</p>
+        <p class="mt-4 text-center text-[11px] text-slate-700">Pocket Server · RyanNars</p>
+      </div>
+    </div>
+
+    <footer class="mt-8 pb-4 text-center text-[11px] text-slate-600">
+      Pocket Server · built by <span class="font-medium text-slate-400">RyanNars</span>
+    </footer>
+
+    <!-- Toast -->
+    <div id="toast" class="pointer-events-none fixed inset-x-0 bottom-4 z-50 flex justify-center px-4"></div>
+
+    <script src="version.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "appId": "com.pocketserver.app",
+  "appName": "Pocket Server",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "plugins": {
+    "Nodejs": {
+      "nodeDir": "nodejs",
+      "startMode": "auto"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+node_modules/
+public/nodejs/node_modules/
+public/nodejs/www/
+public/nodejs/data/
+data/
+
+# Generated at build time by scripts/sync-ui.mjs
+public/version.js
+
+# Android build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/release/
+*.keystore
+keystore.properties
+*.jks
+
+# OS noise
+.DS_Store
+Thumbs.db
+*.log
+
+# Release binaries are attached to a GitHub Release, not tracked
+apk/*.apk
+# Raw brand upload; the cropped master lives in assets/brand/
+/1794716922711.png
