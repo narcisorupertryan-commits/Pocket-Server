@@ -24,6 +24,20 @@ PC / tablet on the same Wi-Fi                       The phone (single APK)
                                          └──────────────────────────────────────────────┘
 ```
 
+## Screenshots
+
+| Control panel | File manager |
+| --- | --- |
+| [![Dashboard](docs/screenshots/dashboard.png)](docs/screenshots/dashboard.png) | [![Files](docs/screenshots/files.png)](docs/screenshots/files.png) |
+| **Backups, tunnel and security** | **Quick start, six steps** |
+| [![Backups and tunnel](docs/screenshots/backups-and-tunnel.png)](docs/screenshots/backups-and-tunnel.png) | [![Quick start](docs/screenshots/guide-portrait.png)](docs/screenshots/guide-portrait.png) |
+
+Posters for a store listing, a post or a printed card:
+
+| Poster 1080×1350 | Poster 1080×1080 | Guide 1080×1350 | Guide 1080×1080 |
+| --- | --- | --- | --- |
+| [![](docs/screenshots/poster-portrait.png)](docs/screenshots/poster-portrait.png) | [![](docs/screenshots/poster-square.png)](docs/screenshots/poster-square.png) | [![](docs/screenshots/guide-portrait.png)](docs/screenshots/guide-portrait.png) | [![](docs/screenshots/guide-square.png)](docs/screenshots/guide-square.png) |
+
 ## Why the servers survive the screen locking
 
 `ServerService` is a **foreground service** (`foregroundServiceType="specialUse"`,
@@ -71,6 +85,7 @@ The APK's native library directory is the only place the OS still allows executi
 | `android/.../ServerService.java` | Foreground service: wake lock, PocketBase supervisor, tunnel, notification |
 | `android/.../BootReceiver.java` | Restart after reboot / app update |
 | `android/app/src/main/jniLibs/arm64-v8a/` | Bundled PocketBase + cloudflared binaries |
+| `docs/screenshots/` | Screenshots, posters and the quick-start guide used by this README |
 | `third-party/` | Upstream licences for the bundled binaries |
 | `apk/pocket-server-arm64-debug.apk` | Prebuilt debug APK (arm64) |
 | `data/` | Desktop-development stand-in for phone app storage (gitignored) |
