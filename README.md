@@ -164,6 +164,24 @@ cloudflared.exe) and `npm run windows:pack` — it writes
 `dist/PocketServer-<version>-windows-x64.zip`. Firewall rules, autostart, data
 locations and troubleshooting: [docs/windows.md](docs/windows.md).
 
+### Builds run in CI
+
+`.github/workflows/build.yml` builds both editions without a local machine:
+
+- **windows-latest** downloads the three binaries, packs the zip, then runs the real
+  `pocketbase.exe` through the launcher and checks the panel, PocketBase, a backup and
+  the tunnel card — the checks that cannot be made on a Linux build box.
+- **ubuntu-latest** builds the four APKs with JDK 21 and the Android SDK. Release APKs
+  are signed from repository secrets: `POCKET_SERVER_KEYSTORE_BASE64`,
+  `POCKET_SERVER_STOREPASS`, `POCKET_SERVER_KEYPASS`, `POCKET_SERVER_KEYALIAS`. Without
+  them (forks, pull requests) it builds debug APKs only, because `build.gradle` refuses
+  to produce an unsigned release.
+- Pushing a `v*` tag attaches both artifacts to that release.
+
+```bash
+base64 -w0 pocketserver-release.jks   # value for POCKET_SERVER_KEYSTORE_BASE64
+```
+
 ## Build the APK
 
 ```bash
