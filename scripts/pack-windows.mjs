@@ -88,6 +88,9 @@ async function main() {
     'utf8',
   );
 
+  // Never ship a data folder: it would carry someone's PIN, sessions and database.
+  await fsp.rm(path.join(OUT, 'data'), { recursive: true, force: true });
+
   const binaries = ['node.exe', 'pocketbase.exe', 'cloudflared.exe'].filter((name) =>
     fs.existsSync(path.join(OUT, name)),
   );

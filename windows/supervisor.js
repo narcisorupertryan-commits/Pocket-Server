@@ -186,17 +186,20 @@ class Supervisor {
     this.restartRequested = false;
     this.pocketbase = null;
     this.cloudflared = null;
+    this.panelPid = null;
     this.busy = false;
     this.tunnelState = 'stopped';
     this.tunnelUrl = null;
     this.tunnelMessage = 'The tunnel is stopped.';
     this.tunnelMode = 'quick';
     this.tunnelPort = PANEL_PORT;
+    this.runtimeFile = path.join(DATA_DIR, 'runtime.json');
     this.timers = [];
   }
 
   start() {
     ensureDirs();
+    this.cleanupOrphans();
     this.writePowerStatus();
     if (this.tunnelState !== 'running') this.writeTunnelStatus();
     log(`root ${ROOT}`);
@@ -210,6 +213,7 @@ class Supervisor {
 
     this.timers.push(setInterval(() => this.watchCommands(), COMMAND_POLL_MS));
     this.timers.push(setInterval(() => this.ensurePocketbaseRunning(), 15000));
+    this.recordRuntime();
     return this;
   }
 
@@ -229,7 +233,77 @@ class Supervisor {
       this.kill(this.pocketbase);
       this.pocketbase = null;
     }
+    try {
+      fs.unlinkSync(this.runtimeFile);
+    } catch (error) {
+      /* nothing recorded */
+    }
     await sleep(150);
+  }
+
+  /* ---------------- leftovers from a hard close ---------------- */
+
+  recordRuntime() {
+    // A child's exit event still fires while we shut down; writing then would leave a
+    // pidfile behind for a run that has already ended.
+    if (this.stopping) return;
+    writeJson(this.runtimeFile, {
+      launcherPid: process.pid,
+      panelPid: this.panelPid,
+      pocketbasePid: this.pocketbase ? this.pocketbase.pid || null : null,
+      cloudflaredPid: this.cloudflared ? this.cloudflared.pid || null : null,
+      updatedAt: isoNow(),
+    });
+  }
+
+  /** The panel is spawned by the launcher, but its pid belongs in the same record. */
+  attachPanel(child) {
+    this.panelPid = child && child.pid ? child.pid : null;
+    this.recordRuntime();
+  }
+
+  static isAlive(pid) {
+    if (!pid) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      // EPERM means it exists but belongs to someone else.
+      return error.code === 'EPERM';
+    }
+  }
+
+  /**
+   * Closing a console window on Windows ends the launcher without running a shutdown
+   * handler, so pocketbase.exe and cloudflared.exe would keep running and hold their
+   * ports. Their pids are recorded in runtime.json; the next start clears them out.
+   */
+  cleanupOrphans() {
+    const previous = readJson(this.runtimeFile);
+    if (!previous) return;
+
+    const owner = Number(previous.launcherPid) || 0;
+    if (owner && owner !== process.pid && Supervisor.isAlive(owner)) return; // another instance owns them
+
+    // The panel goes first: it is what holds the port the next run wants.
+    for (const key of ['panelPid', 'pocketbasePid', 'cloudflaredPid']) {
+      const pid = Number(previous[key]) || 0;
+      if (!pid || pid === process.pid) continue;
+      if (!Supervisor.isAlive(pid)) continue;
+      log(`clearing a leftover process from the last run (pid ${pid})`);
+      try {
+        if (IS_WIN) spawn('taskkill', ['/pid', String(pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+        else process.kill(pid, 'SIGKILL');
+      } catch (error) {
+        log(`could not stop pid ${pid}: ${error.message}`);
+      }
+    }
+
+    try {
+      fs.unlinkSync(this.runtimeFile);
+    } catch (error) {
+      /* already gone */
+    }
   }
 
   /** Windows needs the whole tree gone; POSIX children usually exit on their own. */
@@ -286,6 +360,7 @@ class Supervisor {
 
       this.pocketbase = child;
       appendLog('pocketbase', '--- started ---');
+      this.recordRuntime();
 
       pipeLines(child.stdout, (line) => {
         appendLog('pocketbase', line);
@@ -305,6 +380,7 @@ class Supervisor {
       });
 
       if (this.pocketbase === child) this.pocketbase = null;
+      this.recordRuntime();
       appendLog('pocketbase', `--- exited ${code} ---`);
       if (this.stopping) return;
 
@@ -416,6 +492,7 @@ class Supervisor {
     }
 
     this.cloudflared = child;
+    this.recordRuntime();
     this.tunnelState = 'starting';
     this.tunnelUrl = null;
     this.tunnelMessage =
@@ -456,6 +533,7 @@ class Supervisor {
     child.once('exit', (code) => {
       if (this.cloudflared !== child) return;
       this.cloudflared = null;
+      this.recordRuntime();
       appendLog('cloudflared', `--- exited ${code} ---`);
       if (this.tunnelState === 'running' || this.tunnelState === 'starting') {
         this.tunnelState = 'error';

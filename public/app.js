@@ -11,6 +11,14 @@
 
 const STORAGE_KEY = 'pocket-server-token';
 const DEFAULT_PORT = '8080';
+// The same panel runs on the phone and on a PC. Only the wording differs, and it is
+// decided from the browser that opened the page rather than from the server, so the
+// screen is right even before the first status poll answers.
+const IS_PC = (() => {
+  const agent = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
+  return /Windows NT|Macintosh|X11; Linux/i.test(agent) && !/Android|iPhone|iPad|Mobile/i.test(agent);
+})();
+const DEVICE_LABEL = IS_PC ? 'PC' : 'phone';
 // Replaced with the package version by scripts/sync-ui.mjs, so the screen that loads
 // inside the APK can show which build's UI it is actually running.
 const UI_VERSION = (typeof window !== 'undefined' && window.POCKET_UI_VERSION) || 'dev build';
@@ -272,7 +280,7 @@ function sitePort(status) {
 function lanHost(status) {
   const list = status && status.addresses;
   if (Array.isArray(list) && list.length > 0 && list[0] && list[0].address) return list[0].address;
-  return '<phone-ip>';
+  return '<server-ip>';
 }
 
 function reachableHost(status) {
@@ -623,7 +631,7 @@ function renderStatus(status) {
 
   const list = $('address-list');
   list.replaceChildren();
-  const addresses = status.addresses && status.addresses.length > 0 ? status.addresses : [{ name: 'phone', address: '<phone-ip>' }];
+  const addresses = status.addresses && status.addresses.length > 0 ? status.addresses : [{ name: 'server', address: '<server-ip>' }];
   for (const entry of addresses) {
     const row = document.createElement('button');
     row.type = 'button';
@@ -638,7 +646,7 @@ function renderStatus(status) {
     address.textContent = url;
     const name = document.createElement('span');
     name.className = 'block text-[11px] text-slate-500';
-    name.textContent = entry.name === 'phone' ? 'find the phone IP in Wi-Fi settings' : entry.name;
+    name.textContent = entry.name === 'server' ? "find this device's IP in its network settings" : entry.name;
     left.append(address, name);
 
     row.append(left);
@@ -844,7 +852,7 @@ function renderTunnel(status, available, namedConfigured) {
   }
 
   if (!available) {
-    message.textContent = 'The tunnel is spawned by the Android app — start it from the dashboard on the phone.';
+    message.textContent = 'The tunnel is unavailable in this build — it needs a build that bundles cloudflared.';
     message.className = 'mt-2 text-xs text-slate-500';
   }
 }
@@ -893,7 +901,7 @@ async function downloadFile(name) {
 }
 
 async function deleteFile(name) {
-  if (!window.confirm(`Delete "${name}" from the phone?`)) return;
+  if (!window.confirm(`Delete "${name}" from the server?`)) return;
   try {
     const data = await api(`/api/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
     renderFiles(data.files);
@@ -1154,7 +1162,7 @@ async function probeDiagnostics() {
   if (!card) return;
   card.classList.remove('hidden');
 
-  $('offline-summary').textContent = 'Checking the phone…';
+  $('offline-summary').textContent = 'Checking the server…';
   $('offline-pocketbase').textContent = 'checking…';
   $('offline-boot').textContent = 'checking…';
   $('offline-error').textContent = 'checking…';
@@ -1182,6 +1190,16 @@ async function probeDiagnostics() {
 }
 
 async function boot() {
+  // Windows and Android share this file; name the machine that is actually serving it.
+  if ($('footer-note')) {
+    $('footer-note').textContent = `Runs entirely on this ${DEVICE_LABEL} · no internet needed`;
+  }
+  if ($('gate-note')) {
+    $('gate-note').textContent = IS_PC
+      ? 'The PIN is stored in data\\settings.json inside the server folder.'
+      : 'The PIN is shown in the app settings on the phone.';
+  }
+
   const ready = await resolveApiBase();
   if (!ready) {
     setServerState('pending', 'starting the server…');
@@ -1193,7 +1211,7 @@ async function boot() {
     if (state.bootFailures === 6 && !$('gate').classList.contains('hidden')) {
       showGate(
         'The panel on port 8080 is not answering. First launch can take up to a minute while the runtime unpacks. ' +
-          'Quick check: open http://127.0.0.1:8090/_/ on this phone. If that page loads, only the panel failed and ' +
+          'Quick check: open http://127.0.0.1:8090/_/ on this device. If that page loads, only the panel failed and ' +
           'http://127.0.0.1:8090/__boot-error.txt says why. If it does not load either, the background service is stopped — ' +
           'check the notification, then reopen the app.',
       );

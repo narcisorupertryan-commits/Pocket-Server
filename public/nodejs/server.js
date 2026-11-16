@@ -695,7 +695,7 @@ app.post('/api/superuser', (req, res) => {
     return;
   }
   if (!SUPERVISED) {
-    res.status(501).json({ error: 'Only the app on the phone can create the superuser.' });
+    res.status(501).json({ error: 'Only the phone app or the Windows launcher can create the superuser.' });
     return;
   }
 
@@ -755,7 +755,7 @@ app.post('/api/power', (req, res) => {
     return;
   }
   if (!SUPERVISED) {
-    res.status(501).json({ error: 'The switch only works in the app on the phone.' });
+    res.status(501).json({ error: 'The switch needs the phone app or the Windows launcher.' });
     return;
   }
   try {
@@ -873,7 +873,7 @@ app.get('/api/backup', async (req, res) => {
 
 app.post('/api/backup', (req, res) => {
   if (!SUPERVISED) {
-    res.status(501).json({ error: 'Backups run in the app on the phone.' });
+    res.status(501).json({ error: 'Backups need the phone app or the Windows launcher.' });
     return;
   }
   try {

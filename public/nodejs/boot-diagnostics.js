@@ -28,6 +28,8 @@ function findDataDir() {
   } catch (error) {
     // Not running inside the APK.
   }
+  // The Windows launcher can place the data folder elsewhere.
+  if (process.env.POCKET_SERVER_DATA) return path.resolve(process.env.POCKET_SERVER_DATA);
   // Same fallback as server.js: <repo>/data when run from public/nodejs.
   return path.join(__dirname, '..', '..', 'data');
 }

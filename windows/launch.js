@@ -22,7 +22,8 @@ const args = process.argv.slice(2);
 const noOpen = args.includes('--no-open') || process.env.POCKET_SERVER_NO_OPEN === '1';
 
 const serverEntry = path.join(ROOT, 'public', 'nodejs', 'server.js');
-const panelLog = path.join(ROOT, 'data', 'logs', 'panel.log');
+// Same folder the supervisor uses, so -data stays together even when it is moved.
+const panelLog = path.join(supervisorModule.paths.DATA_DIR, 'logs', 'panel.log');
 
 let panel = null;
 let supervisor = null;
@@ -103,21 +104,43 @@ function openBrowser(url) {
   }
 }
 
-function shutdown(reason, code = 0) {
+/** SIGTERM, then SIGKILL if it is still there — an exit handler must not leave a port held. */
+function stopChild(child, graceMs) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode !== null) return resolve();
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch (error) {
+        /* gone */
+      }
+      resolve();
+    }, graceMs);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      child.kill();
+    } catch (error) {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
+
+async function shutdown(reason, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   say(`shutting down (${reason})`);
+  await stopChild(panel, 1200);
   try {
-    if (panel) panel.kill();
+    if (supervisor) await supervisor.stop();
   } catch (error) {
     /* already gone */
   }
-  const finish = () => {
-    say('stopped');
-    process.exit(code);
-  };
-  if (supervisor) supervisor.stop().then(finish).catch(finish);
-  else finish();
+  say('stopped');
+  process.exit(code);
 }
 
 async function main() {
@@ -126,7 +149,7 @@ async function main() {
     process.exit(1);
   }
 
-  fs.mkdirSync(path.join(ROOT, 'data', 'logs'), { recursive: true });
+  fs.mkdirSync(path.dirname(panelLog), { recursive: true });
 
   supervisor = supervisorModule.start();
 
@@ -137,6 +160,8 @@ async function main() {
     stdio: ['ignore', logHandle, logHandle],
     windowsHide: true,
   });
+
+  supervisor.attachPanel(panel);
 
   panel.once('exit', (code) => {
     if (shuttingDown) return;

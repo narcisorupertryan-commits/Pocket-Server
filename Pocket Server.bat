@@ -16,16 +16,16 @@ cls
 echo.
 echo            ####    #   #   #   #
 echo            #   #    # #    ##  #
-timeout /t 1 >nul
+timeout /t 1 >nul 2>&1
 echo            ####      #     # # #
 echo            # #       #     #  ##
-timeout /t 1 >nul
+timeout /t 1 >nul 2>&1
 echo            #  #      #     #   #
-timeout /t 1 >nul
+timeout /t 1 >nul 2>&1
 echo.
 echo               R Y N   .   P O C K E T   S E R V E R
 echo               your phone is the server - now on a PC
-timeout /t 1 >nul
+timeout /t 1 >nul 2>&1
 color 07
 
 :boot
