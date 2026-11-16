@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "postinstall": "npm --prefix public/nodejs install --omit=dev --no-audit --no-fund",
+    "postinstall": "node scripts/install-panel-deps.mjs",
     "build:css": "tailwindcss -i ./src/input.css -o ./public/app.css --minify",
     "sync:ui": "npm run build:css && node scripts/sync-ui.mjs",
     "start": "npm run sync:ui && node public/nodejs/server.js",
