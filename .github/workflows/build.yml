@@ -1,0 +1,214 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 (portable)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install the panel's dependencies
+        run: npm ci
+
+      - name: Download node.exe, pocketbase.exe and cloudflared.exe
+        run: node scripts/fetch-windows-deps.mjs
+
+      - name: Assemble the portable folder and its zip
+        run: node scripts/pack-windows.mjs
+
+      # The check that cannot be done from a Linux build machine: the real binaries,
+      # on the real OS, driven through the launcher the user double-clicks.
+      - name: Smoke test the real binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $launcher = Start-Process -FilePath 'node' -ArgumentList 'windows/launch.js','--no-open' -PassThru -NoNewWindow
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 3
+              try {
+                $health = Invoke-RestMethod 'http://127.0.0.1:8080/api/health' -TimeoutSec 4
+                if ($health.ok) { $ready = $true; break }
+              } catch { }
+            }
+            if (-not $ready) {
+              Get-ChildItem data/logs -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "--- $($_.Name) ---"
+                Get-Content $_.FullName -Tail 40
+              }
+              throw 'The panel never answered on :8080'
+            }
+            Write-Host 'Panel is up on :8080'
+
+            $pocketbaseUp = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $pb = Invoke-RestMethod 'http://127.0.0.1:8090/api/health' -TimeoutSec 4
+                if ($pb.code -eq 200) { $pocketbaseUp = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 3
+            }
+            if (-not $pocketbaseUp) {
+              Get-Content data/logs/pocketbase.log -Tail 40 -ErrorAction SilentlyContinue
+              throw 'PocketBase never answered on :8090'
+            }
+            Write-Host 'PocketBase is up on :8090'
+
+            $login = Invoke-RestMethod 'http://127.0.0.1:8080/api/login' -Method Post -ContentType 'application/json' -Body '{"pin":"1234"}'
+            $headers = @{ 'X-Pocket-Token' = $login.token }
+            $status = Invoke-RestMethod 'http://127.0.0.1:8080/api/status' -Headers $headers
+            Write-Host "panel=$($status.status) port=$($status.port) site=$($status.sitePort)"
+            if ($status.status -ne 'online') { throw "Unexpected panel status: $($status.status)" }
+
+            Invoke-RestMethod 'http://127.0.0.1:8080/api/backup' -Method Post -Headers $headers | Out-Null
+            $zip = $null
+            for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Seconds 3
+              $zip = Get-ChildItem data/pb_public/backups/*.zip -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($zip) { break }
+            }
+            if (-not $zip) {
+              Get-Content data/backup.status.json -ErrorAction SilentlyContinue
+              throw 'The backup never appeared'
+            }
+            Write-Host "backup $($zip.Name) $([math]::Round($zip.Length / 1KB)) KiB"
+
+            $tunnel = Invoke-RestMethod 'http://127.0.0.1:8080/api/tunnel' -Headers $headers
+            if (-not $tunnel.available) { throw 'The tunnel card reported unavailable although cloudflared is bundled' }
+            Write-Host 'Tunnel card is available'
+          }
+          finally {
+            if ($launcher -and -not $launcher.HasExited) { taskkill /PID $launcher.Id /T /F | Out-Null }
+            Start-Sleep -Seconds 2
+            Get-Process pocketbase, cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/PocketServer-*-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KEYSTORE_B64: ${{ secrets.POCKET_SERVER_KEYSTORE_BASE64 }}
+      KEYSTORE_PASS: ${{ secrets.POCKET_SERVER_STOREPASS }}
+      KEY_PASS: ${{ secrets.POCKET_SERVER_KEYPASS }}
+      KEY_ALIAS: ${{ secrets.POCKET_SERVER_KEYALIAS }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Copy the web UI into the Android project
+        run: npm run cap:sync
+
+      # Release APKs must be signed, and build.gradle fails the build on purpose when
+      # no key is present. With no secrets (forks, pull requests) only debug is built.
+      - name: Unpack the signing key
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          {
+            echo "POCKET_SERVER_KEYSTORE=$RUNNER_TEMP/release.jks"
+            echo "POCKET_SERVER_STOREPASS=$KEYSTORE_PASS"
+            echo "POCKET_SERVER_KEYALIAS=${KEY_ALIAS:-pocketserver}"
+            echo "POCKET_SERVER_KEYPASS=$KEY_PASS"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cd android
+          if [ -n "${POCKET_SERVER_KEYSTORE:-}" ]; then
+            ./gradlew assembleLiteRelease assembleFullRelease --no-daemon
+          else
+            echo "No signing key in this run - building debug APKs only."
+          fi
+          ./gradlew assembleLiteDebug assembleFullDebug --no-daemon
+
+      - name: Check the APKs
+        run: |
+          set -euo pipefail
+          cd android/app/build/outputs/apk
+          find . -name '*.apk' -print
+          count=$(find . -name '*.apk' | wc -l)
+          if [ "$count" -lt 2 ]; then echo "Expected at least two APKs, got $count"; exit 1; fi
+          echo "versionCode $(sed -n 's/.*versionCode \([0-9]*\).*/\1/p' ../../../build.gradle | head -1)"
+          signer=$(ls "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
+          for apk in $(find . -name '*-release.apk'); do
+            if [ -n "$signer" ]; then
+              "$signer" verify "$apk" > /dev/null
+            else
+              unzip -l "$apk" | grep -Eq 'META-INF/[^/]+\.(RSA|DSA|EC)'
+            fi
+            echo "signed: $apk"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Upload the assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la assets
+          gh release view "$TAG" > /dev/null 2>&1 || \
+            gh release create "$TAG" --title "Pocket Server ${TAG#v}" --notes "Built from $GITHUB_SHA by GitHub Actions."
+          gh release upload "$TAG" assets/* --clobber
