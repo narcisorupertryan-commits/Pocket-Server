@@ -12,7 +12,9 @@ permissions:
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # A pull request supersedes its own earlier run; a push to main must not cancel the
+  # build that is about to publish artifacts.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows:
@@ -27,8 +29,13 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Install the panel's dependencies
-        run: npm ci
+      # --ignore-scripts plus an explicit installer: the old inline postinstall spawned
+      # `npm` by name, which a Windows runner cannot resolve inside a lifecycle script.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install the panel's runtime dependencies
+        run: node scripts/install-panel-deps.mjs
 
       - name: Download node.exe, pocketbase.exe and cloudflared.exe
         run: node scripts/fetch-windows-deps.mjs
@@ -133,10 +140,19 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - uses: android-actions/setup-android@v3
+      # The runner image already carries the Android SDK with accepted licences;
+      # android-actions/setup-android fails on the current command-line tools, which no
+      # longer ship a `tools` package.
+      - name: Check the Android SDK
+        run: |
+          echo "SDK: $ANDROID_SDK_ROOT"
+          ls "$ANDROID_SDK_ROOT/platforms" | tail -3
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Install the panel's runtime dependencies
+        run: node scripts/install-panel-deps.mjs
 
       - name: Copy the web UI into the Android project
         run: npm run cap:sync
