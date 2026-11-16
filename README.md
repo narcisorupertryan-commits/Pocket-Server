@@ -144,6 +144,26 @@ service can spawn `cloudflared`. To rehearse the full pair:
 npm start
 ```
 
+## Windows build
+
+The panel is unchanged on a PC: `windows/supervisor.js` replaces the Android
+foreground service and speaks the same protocol (command files in, status JSON out),
+so the power switch, backups, the superuser card and the tunnel all work there too.
+
+```bat
+:: portable download: run the launcher, no install
+"Pocket Server.bat"
+
+:: from a source checkout
+npm install
+node windows/launch.js
+```
+
+Build the shippable folder with `npm run windows:fetch` (node.exe, pocketbase.exe,
+cloudflared.exe) and `npm run windows:pack` — it writes
+`dist/PocketServer-<version>-windows-x64.zip`. Firewall rules, autostart, data
+locations and troubleshooting: [docs/windows.md](docs/windows.md).
+
 ## Build the APK
 
 ```bash

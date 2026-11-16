@@ -27,3 +27,6 @@ Thumbs.db
 apk/*.apk
 # Raw brand upload; the cropped master lives in assets/brand/
 /1794716922711.png
+
+# windows release build
+dist/

@@ -1,0 +1,106 @@
+#!/usr/bin/env node
+/**
+ * Builds the release folder and its zip:
+ *
+ *   dist/PocketServer-windows-x64/       ← the portable folder
+ *   dist/PocketServer-windows-x64.zip    ← the release asset
+ *
+ * Run scripts/fetch-windows-deps.mjs first; it fills the folder with node.exe,
+ * pocketbase.exe and cloudflared.exe. This script only copies the app itself, so a
+ * rebuild never re-downloads 80 MiB.
+ */
+
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { writeZipDir } = require('../windows/zipdir.js');
+
+const ROOT = path.resolve(import.meta.dirname, '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const OUT = path.join(ROOT, 'dist', `PocketServer-windows-x64`);
+const ZIP = path.join(ROOT, 'dist', `PocketServer-${pkg.version}-windows-x64.zip`);
+
+const COPY = [
+  ['Pocket Server.bat', 'Pocket Server.bat'],
+  ['windows/launch.js', 'windows/launch.js'],
+  ['windows/supervisor.js', 'windows/supervisor.js'],
+  ['windows/zipdir.js', 'windows/zipdir.js'],
+  ['windows/selfcheck.js', 'windows/selfcheck.js'],
+  ['docs/windows.md', 'docs/windows.md'],
+  ['third-party/cloudflared/LICENSE', 'third-party/cloudflared-LICENSE.txt'],
+  ['third-party/pocketbase/LICENSE.md', 'third-party/pocketbase-LICENSE.md'],
+  ['third-party/pocketbase/CHANGELOG.md', 'third-party/pocketbase-CHANGELOG.md'],
+];
+
+const PANEL_FILES = [
+  'public/index.html',
+  'public/app.js',
+  'public/app.css',
+  'public/theme-init.js',
+  'public/version.js',
+  'public/logo.png',
+  'public/icon-192.png',
+  'public/favicon.png',
+];
+
+function say(message) {
+  console.log(`[pack] ${message}`);
+}
+
+async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
+
+  for (const [from, to] of COPY) {
+    const source = path.join(ROOT, from);
+    if (!fs.existsSync(source)) {
+      say(`skipping ${from} (not in the repo)`);
+      continue;
+    }
+    const target = path.join(OUT, to);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.copyFile(source, target);
+  }
+
+  // The panel: server.js plus the static UI it serves, exactly as the APK ships it.
+  const nodeDir = path.join(OUT, 'public', 'nodejs');
+  await fsp.mkdir(path.join(nodeDir, 'www'), { recursive: true });
+  await fsp.copyFile(path.join(ROOT, 'public', 'nodejs', 'server.js'), path.join(nodeDir, 'server.js'));
+  await fsp.copyFile(path.join(ROOT, 'public', 'nodejs', 'boot-diagnostics.js'), path.join(nodeDir, 'boot-diagnostics.js'));
+  await fsp.copyFile(path.join(ROOT, 'public', 'nodejs', 'package.json'), path.join(nodeDir, 'package.json'));
+  for (const file of PANEL_FILES) {
+    await fsp.copyFile(path.join(ROOT, file), path.join(nodeDir, 'www', path.basename(file)));
+  }
+
+  // express + multer: the only runtime dependencies, copied from the repo's install.
+  const modules = path.join(ROOT, 'public', 'nodejs', 'node_modules');
+  if (!fs.existsSync(modules)) {
+    throw new Error('public/nodejs/node_modules is missing — run: npm --prefix public/nodejs install --omit=dev');
+  }
+  await fsp.cp(modules, path.join(nodeDir, 'node_modules'), { recursive: true });
+
+  await fsp.writeFile(
+    path.join(OUT, 'VERSION.txt'),
+    `Pocket Server ${pkg.version} for Windows x64\nbuilt ${new Date().toISOString()}\n`,
+    'utf8',
+  );
+
+  const binaries = ['node.exe', 'pocketbase.exe', 'cloudflared.exe'].filter((name) =>
+    fs.existsSync(path.join(OUT, name)),
+  );
+  say(`binaries in folder: ${binaries.join(', ') || 'none — run scripts/fetch-windows-deps.mjs'}`);
+
+  const result = writeZipDir(OUT, ZIP);
+  const digest = createHash('sha256').update(fs.readFileSync(ZIP)).digest('hex');
+  const size = (fs.statSync(ZIP).size / 1048576).toFixed(1);
+  say(`${path.relative(ROOT, ZIP)} — ${size} MiB, ${result.entries} files`);
+  say(`sha256 ${digest}`);
+}
+
+main().catch((error) => {
+  console.error(`[pack] ${error.message}`);
+  process.exit(1);
+});

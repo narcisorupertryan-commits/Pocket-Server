@@ -75,6 +75,11 @@ try {
   bridge = null;
 }
 
+/* The foreground service on Android and windows/supervisor.js on a PC do the same
+ * job: they own the child processes and answer through the command files. Anything
+ * that talks to that supervisor may therefore offer the device-only cards. */
+const SUPERVISED = Boolean(bridge) || process.env.POCKET_SERVER_SUPERVISOR === '1';
+
 function resolveDataDir() {
   if (bridge && bridge.app && typeof bridge.app.datadir === 'function') {
     try {
@@ -83,6 +88,9 @@ function resolveDataDir() {
       console.error('[pocket-server] could not read app datadir:', error.message);
     }
   }
+  // The Windows launcher may point the whole stack at a folder of its choosing; the
+  // supervisor must read the same one or the command files land somewhere else.
+  if (process.env.POCKET_SERVER_DATA) return path.resolve(process.env.POCKET_SERVER_DATA);
   // Desktop development: keep the data outside the folder that gets copied into
   // the APK, so a local run never ships its settings and uploads with the app.
   return path.join(APP_DIR, '..', '..', 'data');
@@ -533,7 +541,7 @@ app.get('/api/tunnel', (req, res) => {
   res.json({
     status: status || { state: 'stopped' },
     targets: tunnelTargets(),
-    available: Boolean(bridge),
+    available: SUPERVISED,
     // The token itself never leaves the device: only whether one is stored.
     named: { configured: hasNamedTunnelToken() },
     watch: tunnelWatch.snapshot(),
@@ -666,7 +674,7 @@ app.get('/api/superuser', (req, res) => {
       ? { url: installer.url, lanUrl: installer.lanUrl, expiresAt: installer.expiresAt, expired }
       : null,
     result: result || null,
-    available: Boolean(bridge),
+    available: SUPERVISED,
   });
 });
 
@@ -686,7 +694,7 @@ app.post('/api/superuser', (req, res) => {
     res.status(400).json({ error: 'That password is too long.' });
     return;
   }
-  if (!bridge) {
+  if (!SUPERVISED) {
     res.status(501).json({ error: 'Only the app on the phone can create the superuser.' });
     return;
   }
@@ -738,7 +746,7 @@ function powerState() {
 }
 
 app.get('/api/power', (req, res) => {
-  res.json({ ...powerState(), available: Boolean(bridge) });
+  res.json({ ...powerState(), available: SUPERVISED });
 });
 
 app.post('/api/power', (req, res) => {
@@ -746,7 +754,7 @@ app.post('/api/power', (req, res) => {
     res.status(400).json({ error: 'on must be true or false.' });
     return;
   }
-  if (!bridge) {
+  if (!SUPERVISED) {
     res.status(501).json({ error: 'The switch only works in the app on the phone.' });
     return;
   }
@@ -864,7 +872,7 @@ app.get('/api/backup', async (req, res) => {
 });
 
 app.post('/api/backup', (req, res) => {
-  if (!bridge) {
+  if (!SUPERVISED) {
     res.status(501).json({ error: 'Backups run in the app on the phone.' });
     return;
   }
