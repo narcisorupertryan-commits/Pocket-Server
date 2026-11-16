@@ -49,7 +49,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $launcher = Start-Process -FilePath 'node' -ArgumentList 'windows/launch.js','--no-open' -PassThru -NoNewWindow
+          # Start the packed folder exactly as the user will: its own node.exe, its own
+          # pocketbase.exe beside it, its own data/ directory.
+          $pack = 'dist\PocketServer-windows-x64'
+          $data = Join-Path $pack 'data'
+          $launcher = Start-Process -FilePath (Join-Path $pack 'node.exe') -ArgumentList (Join-Path $pack 'windows\launch.js'),'--no-open' -PassThru -NoNewWindow
           try {
             $ready = $false
             for ($i = 0; $i -lt 40; $i++) {
@@ -60,7 +64,7 @@ jobs:
               } catch { }
             }
             if (-not $ready) {
-              Get-ChildItem data/logs -ErrorAction SilentlyContinue | ForEach-Object {
+              Get-ChildItem (Join-Path $data 'logs') -ErrorAction SilentlyContinue | ForEach-Object {
                 Write-Host "--- $($_.Name) ---"
                 Get-Content $_.FullName -Tail 40
               }
@@ -77,7 +81,7 @@ jobs:
               Start-Sleep -Seconds 3
             }
             if (-not $pocketbaseUp) {
-              Get-Content data/logs/pocketbase.log -Tail 40 -ErrorAction SilentlyContinue
+              Get-Content (Join-Path $data 'logs\pocketbase.log') -Tail 40 -ErrorAction SilentlyContinue
               throw 'PocketBase never answered on :8090'
             }
             Write-Host 'PocketBase is up on :8090'
@@ -92,11 +96,11 @@ jobs:
             $zip = $null
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Seconds 3
-              $zip = Get-ChildItem data/pb_public/backups/*.zip -ErrorAction SilentlyContinue | Select-Object -First 1
+              $zip = Get-ChildItem (Join-Path $data 'pb_public\backups\*.zip') -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($zip) { break }
             }
             if (-not $zip) {
-              Get-Content data/backup.status.json -ErrorAction SilentlyContinue
+              Get-Content (Join-Path $data 'backup.status.json') -ErrorAction SilentlyContinue
               throw 'The backup never appeared'
             }
             Write-Host "backup $($zip.Name) $([math]::Round($zip.Length / 1KB)) KiB"
