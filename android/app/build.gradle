@@ -44,8 +44,8 @@ android {
         applicationId "com.pocketserver.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 11
-        versionName "1.9.1"
+        versionCode 12
+        versionName "1.9.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // nodejs-mobile ships one runtime per ABI (~40 MB each). arm64 covers the Galaxy A07.
