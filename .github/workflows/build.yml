@@ -322,10 +322,17 @@ jobs:
       - name: Upload the assets
         env:
           GH_TOKEN: ${{ github.token }}
+          # Nothing checks the repository out in this job, and gh refuses to guess which
+          # repository to publish to outside a git tree, so name it explicitly.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          ls -la assets
+          find assets -type f -print
+          # The APKs arrive inside their flavor folders, so `assets/*` would hand gh the
+          # folders themselves instead of the files.
+          mapfile -t files < <(find assets -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo 'No assets were downloaded'; exit 1; fi
           gh release view "$TAG" > /dev/null 2>&1 || \
             gh release create "$TAG" --title "Pocket Server ${TAG#v}" --notes "Built from $GITHUB_SHA by GitHub Actions."
-          gh release upload "$TAG" assets/* --clobber
+          gh release upload "$TAG" "${files[@]}" --clobber
