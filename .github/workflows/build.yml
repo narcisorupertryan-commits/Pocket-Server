@@ -33,6 +33,17 @@ jobs:
       - name: Prove the upgrade path and a second site
         run: node scripts/verify-multisite.mjs
 
+      # The panel's own ?site= rules, checked against the real Express app the phone and
+      # the Windows folder serve rather than a copy of its logic.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install the panel's runtime dependencies
+        run: node scripts/install-panel-deps.mjs
+
+      - name: Prove the panel's ?site= handling
+        run: node scripts/verify-panel-sites.mjs
+
   windows:
     name: Windows x64 (portable)
     runs-on: windows-latest
