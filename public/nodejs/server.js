@@ -103,6 +103,9 @@ function readSiteStatus() {
         port: Number(site.port),
         legacy: site.legacy === true,
         state: String(site.state || 'unknown'),
+        // Absolute paths only: the file routes follow this one.
+        publicDir:
+          typeof site.publicDir === 'string' && path.isAbsolute(site.publicDir) ? site.publicDir : '',
       }));
   } catch (error) {
     return [];
@@ -113,6 +116,26 @@ const SITES = readSiteStatus();
 const SITE_PORTS = new Set(SITES.map((site) => site.port));
 const PRIMARY_SITE = SITES.find((site) => site.legacy) || SITES[0] || null;
 const PRIMARY_SITE_PORT = PRIMARY_SITE ? PRIMARY_SITE.port : POCKETBASE_PORT;
+
+/* Which site the dashboard is looking at. The page sends ?site=<id>; with no registry
+ * (or a single site) every request resolves to the primary site, so a one-site install
+ * behaves exactly as it did before the switcher existed. */
+function siteById(id) {
+  const wanted = typeof id === 'string' ? id.trim() : '';
+  if (!wanted) return PRIMARY_SITE;
+  return SITES.find((site) => site.id === wanted) || null;
+}
+
+function requestSite(req) {
+  const wanted = req.query && typeof req.query.site === 'string' ? req.query.site : '';
+  return siteById(wanted) || PRIMARY_SITE;
+}
+
+/** The public folder a request is about; the shared one when no site is known. */
+function requestSiteDir(req) {
+  const site = requestSite(req);
+  return site && site.publicDir ? site.publicDir : SITE_DIR;
+}
 
 /* Another app on the phone can already own 8080 (that is an EADDRINUSE). Rather than
  * dying, walk up to the next free port and publish the one that worked, so the UI can
@@ -359,10 +382,10 @@ function lanAddresses() {
   return addresses;
 }
 
-async function listFiles() {
+async function listFiles(dir = SITE_DIR) {
   let entries;
   try {
-    entries = await fsp.readdir(SITE_DIR, { withFileTypes: true });
+    entries = await fsp.readdir(dir, { withFileTypes: true });
   } catch (error) {
     return [];
   }
@@ -371,7 +394,7 @@ async function listFiles() {
   for (const entry of entries) {
     if (!entry.isFile() || entry.name.startsWith('.')) continue;
     try {
-      const info = await fsp.stat(path.join(SITE_DIR, entry.name));
+      const info = await fsp.stat(path.join(dir, entry.name));
       files.push({ name: entry.name, size: info.size, modified: info.mtime.toISOString() });
     } catch (error) {
       // File vanished mid-listing; skip it.
@@ -381,8 +404,8 @@ async function listFiles() {
   return files;
 }
 
-async function fileTotals() {
-  const files = await listFiles();
+async function fileTotals(dir = SITE_DIR) {
+  const files = await listFiles(dir);
   return {
     count: files.length,
     bytes: files.reduce((total, file) => total + file.size, 0),
@@ -394,10 +417,21 @@ async function fileTotals() {
  * ------------------------------------------------------------------ */
 
 const storage = multer.diskStorage({
-  destination: (req, file, done) => done(null, SITE_DIR),
+  // req.query is parsed by now; req.body is not, because this is a multipart request.
+  destination: (req, file, done) => {
+    const dir = requestSiteDir(req);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (error) {
+      done(error);
+      return;
+    }
+    done(null, dir);
+  },
   filename: (req, file, done) => {
+    const dir = requestSiteDir(req);
     const name = safeName(decodeUploadName(file.originalname)) || `upload-${Date.now()}`;
-    done(null, uniqueName(SITE_DIR, name));
+    done(null, uniqueName(dir, name));
   },
 });
 
@@ -483,7 +517,9 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/status', async (req, res) => {
   const memory = process.memoryUsage();
-  const totals = await fileTotals();
+  const site = requestSite(req);
+  const sitePort = site ? site.port : PRIMARY_SITE_PORT;
+  const totals = await fileTotals(requestSiteDir(req));
 
   res.json({
     status: 'online',
@@ -508,8 +544,9 @@ app.get('/api/status', async (req, res) => {
     // panelPort/sitePort are the explicit names the UI prefers; port/pocketbase.port
     // stay for compatibility with older copies of the dashboard.
     panelPort: activePort,
-    sitePort: PRIMARY_SITE_PORT,
-    pocketbase: { port: PRIMARY_SITE_PORT, siteDirectory: SITE_DIR },
+    sitePort,
+    pocketbase: { port: sitePort, siteDirectory: requestSiteDir(req) },
+    siteId: site ? site.id : '',
     sites: SITES,
     defaultPin: settings.pin === DEFAULT_PIN,
   });
@@ -681,7 +718,8 @@ app.post('/api/service', (req, res) => {
   }
 
   try {
-    res.json({ accepted: writeServiceCommand({ action }) });
+    const site = requestSite(req);
+    res.json({ accepted: writeServiceCommand({ action, siteId: site ? site.id : '' }) });
   } catch (error) {
     res.status(500).json({ error: `Could not reach the service: ${error.message}` });
   }
@@ -737,7 +775,13 @@ app.post('/api/superuser', (req, res) => {
   }
 
   try {
-    const accepted = writeServiceCommand({ action: 'create-superuser', email, password });
+    const target = requestSite(req);
+    const accepted = writeServiceCommand({
+      action: 'create-superuser',
+      email,
+      password,
+      siteId: target ? target.id : '',
+    });
     // The password goes to the service and nowhere else — not to the browser, not to a log.
     delete accepted.password;
     res.json({ accepted });
@@ -750,13 +794,14 @@ app.post('/api/superuser', (req, res) => {
  * Backups
  * ------------------------------------------------------------------ */
 
-async function listBackups() {
+async function listBackups(publicDir = SITE_DIR) {
+  const backupDir = path.join(publicDir, 'backups');
   try {
-    const entries = await fsp.readdir(BACKUP_DIR, { withFileTypes: true });
+    const entries = await fsp.readdir(backupDir, { withFileTypes: true });
     const files = [];
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.zip')) continue;
-      const info = await fsp.stat(path.join(BACKUP_DIR, entry.name));
+      const info = await fsp.stat(path.join(backupDir, entry.name));
       files.push({ name: entry.name, bytes: info.size, modified: info.mtime.toISOString() });
     }
     files.sort((a, b) => (a.modified < b.modified ? 1 : -1));
@@ -818,8 +863,9 @@ function hashFile(file) {
 }
 
 /** Records a checksum for every uploaded file so corruption is detectable later. */
-async function recordIntegrity(names) {
-  if (!names.length) return;
+async function recordIntegrity(names, dir = SITE_DIR) {
+  // Integrity tracking covers the original site's files; other sites are not tracked.
+  if (!names.length || dir !== SITE_DIR) return;
   const map = readJsonFile(INTEGRITY_FILE) || {};
 
   for (const name of names) {
@@ -895,9 +941,11 @@ app.get('/api/integrity', async (req, res) => {
 });
 
 app.get('/api/backup', async (req, res) => {
+  const site = requestSite(req);
   res.json({
     status: readJsonFile(BACKUP_STATUS_FILE),
-    files: await listBackups(),
+    files: await listBackups(requestSiteDir(req)),
+    siteId: site ? site.id : '',
     enabled: settings.backupEnabled !== false,
   });
 });
@@ -908,7 +956,8 @@ app.post('/api/backup', (req, res) => {
     return;
   }
   try {
-    res.json({ accepted: writeServiceCommand({ action: 'backup' }) });
+    const site = requestSite(req);
+    res.json({ accepted: writeServiceCommand({ action: 'backup', siteId: site ? site.id : '' }) });
   } catch (error) {
     res.status(500).json({ error: `Could not reach the service: ${error.message}` });
   }
@@ -1013,7 +1062,8 @@ setInterval(() => {
 setInterval(backupTick, 10 * 60 * 1000);
 
 app.get('/api/files', async (req, res) => {
-  res.json({ files: await listFiles(), directory: SITE_DIR });
+  const dir = requestSiteDir(req);
+  res.json({ files: await listFiles(dir), directory: dir });
 });
 
 app.post('/api/upload', upload.array('files', MAX_FILES_PER_REQUEST), async (req, res) => {
@@ -1021,8 +1071,9 @@ app.post('/api/upload', upload.array('files', MAX_FILES_PER_REQUEST), async (req
     ? req.files.map((file) => ({ name: file.filename, size: file.size }))
     : [];
   // Checksums let the panel prove later that a file was not silently corrupted.
-  await recordIntegrity(uploaded.map((file) => file.name));
-  res.json({ uploaded, files: await listFiles(), directory: SITE_DIR });
+  const dir = requestSiteDir(req);
+  await recordIntegrity(uploaded.map((file) => file.name), dir);
+  res.json({ uploaded, files: await listFiles(dir), directory: dir });
 });
 
 app.get('/api/files/:name/download', (req, res) => {
@@ -1032,7 +1083,7 @@ app.get('/api/files/:name/download', (req, res) => {
     return;
   }
 
-  const target = path.join(SITE_DIR, name);
+  const target = path.join(requestSiteDir(req), name);
   if (!fs.existsSync(target)) {
     res.status(404).json({ error: 'File not found.' });
     return;
@@ -1048,7 +1099,7 @@ app.delete('/api/files/:name', async (req, res) => {
   }
 
   try {
-    await fsp.unlink(path.join(SITE_DIR, name));
+    await fsp.unlink(path.join(requestSiteDir(req), name));
   } catch (error) {
     if (error.code === 'ENOENT') {
       res.status(404).json({ error: 'File not found.' });
@@ -1058,8 +1109,8 @@ app.delete('/api/files/:name', async (req, res) => {
     return;
   }
 
-  forgetIntegrity([name]);
-  res.json({ deleted: name, files: await listFiles() });
+  if (requestSiteDir(req) === SITE_DIR) forgetIntegrity([name]);
+  res.json({ deleted: name, files: await listFiles(requestSiteDir(req)) });
 });
 
 app.post('/api/files/:name/rename', async (req, res) => {
@@ -1069,19 +1120,20 @@ app.post('/api/files/:name/rename', async (req, res) => {
     res.status(400).json({ error: 'Invalid file name.' });
     return;
   }
+  const dir = requestSiteDir(req);
   if (from === to) {
-    res.json({ renamed: { from, to }, files: await listFiles() });
+    res.json({ renamed: { from, to }, files: await listFiles(dir) });
     return;
   }
 
-  const target = path.join(SITE_DIR, to);
+  const target = path.join(dir, to);
   if (fs.existsSync(target)) {
     res.status(409).json({ error: 'A file with that name already exists.' });
     return;
   }
 
   try {
-    await fsp.rename(path.join(SITE_DIR, from), target);
+    await fsp.rename(path.join(dir, from), target);
   } catch (error) {
     if (error.code === 'ENOENT') {
       res.status(404).json({ error: 'File not found.' });
@@ -1091,9 +1143,9 @@ app.post('/api/files/:name/rename', async (req, res) => {
     return;
   }
 
-  forgetIntegrity([from]);
-  await recordIntegrity([to]);
-  res.json({ renamed: { from, to }, files: await listFiles() });
+  if (dir === SITE_DIR) forgetIntegrity([from]);
+  await recordIntegrity([to], dir);
+  res.json({ renamed: { from, to }, files: await listFiles(dir) });
 });
 
 // The dashboard itself is public; every piece of data above is not.

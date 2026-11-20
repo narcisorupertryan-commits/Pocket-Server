@@ -105,8 +105,11 @@ Each site is its own PocketBase — its own database, admin login, files and bac
 - Ports 8080–8085 belong to the dashboard and are refused. Leave `port` out and the
   next free port from 8091 is used.
 - A broken entry is logged and skipped — the remaining sites still start.
-- Adding or removing a site needs a launcher restart for now, and the dashboard still
-  shows the primary site.
+- Adding or removing a site needs a launcher restart for now.
+- With more than one site the dashboard grows a **Site** picker above the site
+  links: it switches the site and admin addresses, the file manager, the backup
+  list and the superuser card. With a single site there is no picker and the
+  panel is exactly as it was.
 - The phone build reads the same file from its private folder
   (`/data/data/com.pocketserver.app/files/sites.json`), so you need `adb push` (or a
   rooted device) to add a site there today. With no such file the phone runs one site

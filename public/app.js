@@ -10,6 +10,7 @@
  */
 
 const STORAGE_KEY = 'pocket-server-token';
+const SITE_KEY = 'pocket-server-site';
 const DEFAULT_PORT = '8080';
 // The same panel runs on the phone and on a PC. Only the wording differs, and it is
 // decided from the browser that opened the page rather than from the server, so the
@@ -35,6 +36,9 @@ const state = {
   tunnel: 'stopped',
   logSource: 'pocketbase',
   bootFailures: 0,
+  // Which site the dashboard is showing. Empty means the primary one, and a
+  // single-site server never sets it, so those panels look exactly as before.
+  siteId: localStorage.getItem(SITE_KEY) || '',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -446,7 +450,7 @@ async function loadSuperuser() {
 
   let data;
   try {
-    data = await api('/api/superuser');
+    data = await api(withSite('/api/superuser'));
   } catch (error) {
     return;
   }
@@ -510,14 +514,14 @@ async function saveSuperuser(event) {
   button.disabled = true;
   button.textContent = 'Saving…';
   try {
-    await api('/api/superuser', { method: 'POST', body: JSON.stringify({ email, password }) });
+    await api(withSite('/api/superuser'), { method: 'POST', body: JSON.stringify({ email, password }) });
     $('superuser-password').value = '';
     toast('PocketBase is writing the account…');
 
     // The service stops the database, runs the CLI and starts it again: wait for the result.
     for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const data = await api('/api/superuser').catch(() => null);
+      const data = await api(withSite('/api/superuser')).catch(() => null);
       if (data && data.result && data.result.message) {
         toast(data.result.message, data.result.ok ? 'success' : 'error');
         break;
@@ -537,7 +541,7 @@ async function loadBackup() {
 
   let data;
   try {
-    data = await api('/api/backup');
+    data = await api(withSite('/api/backup'));
   } catch (error) {
     return;
   }
@@ -576,7 +580,7 @@ async function backupNow() {
   const button = $('backup-now');
   button.disabled = true;
   try {
-    await api('/api/backup', { method: 'POST' });
+    await api(withSite('/api/backup'), { method: 'POST' });
     toast('Backup started — PocketBase pauses for a moment.');
     setTimeout(() => refreshExtras(true).catch(() => {}), 5000);
   } catch (error) {
@@ -588,8 +592,63 @@ async function backupNow() {
   }
 }
 
+function siteList(status) {
+  return status && Array.isArray(status.sites) ? status.sites : [];
+}
+
+function selectedSite(status) {
+  const list = siteList(status);
+  if (list.length === 0) return null;
+  return list.find((site) => site.id === state.siteId) || list.find((site) => site.legacy) || list[0];
+}
+
+/** Adds ?site= so a multi-site panel answers for the site on screen. */
+function withSite(path) {
+  if (!state.siteId) return path;
+  return `${path}${path.includes('?') ? '&' : '?'}site=${encodeURIComponent(state.siteId)}`;
+}
+
+/** The picker only appears when there is more than one site. */
+function renderSiteSwitcher(status) {
+  const row = $('site-switcher-row');
+  const select = $('site-switcher');
+  if (!row || !select) return;
+
+  const list = siteList(status);
+  if (list.length <= 1) {
+    row.classList.add('hidden');
+    row.classList.remove('flex');
+    select.replaceChildren();
+    if (state.siteId) {
+      state.siteId = '';
+      localStorage.removeItem(SITE_KEY);
+    }
+    return;
+  }
+
+  const active = selectedSite(status);
+  if (active && active.id !== state.siteId) {
+    state.siteId = active.id;
+    localStorage.setItem(SITE_KEY, state.siteId);
+  }
+
+  row.classList.remove('hidden');
+  row.classList.add('flex');
+  select.replaceChildren();
+  for (const site of list) {
+    const option = document.createElement('option');
+    option.value = site.id;
+    const port = site.port ? ` · :${site.port}` : '';
+    const state = site.state && site.state !== 'running' ? ` (${site.state})` : '';
+    option.textContent = `${site.name || site.id}${port}${state}`;
+    select.append(option);
+  }
+  if (active) select.value = active.id;
+}
+
 function renderStatus(status) {
   state.status = status;
+  renderSiteSwitcher(status);
   setServerState('online', 'online');
   if ($('offline-help')) $('offline-help').classList.add('hidden');
 
@@ -723,7 +782,7 @@ async function copy(text) {
 }
 
 async function refreshStatus() {
-  const data = await api('/api/status');
+  const data = await api(withSite('/api/status'));
   // Tolerate both shapes: the flat payload, or one that nests the server object
   // under "status" (which would otherwise render as the string "online").
   const status = data && typeof data.status === 'object' && data.status !== null ? data.status : data;
@@ -732,7 +791,7 @@ async function refreshStatus() {
 }
 
 async function refreshFiles() {
-  const data = await api('/api/files');
+  const data = await api(withSite('/api/files'));
   renderFiles(data.files);
 }
 
@@ -764,7 +823,7 @@ async function refreshLogs() {
 async function restartSelectedService() {
   const action = state.logSource === 'pocketbase' ? 'restart-pocketbase' : 'restart-tunnel';
   try {
-    await api('/api/service', { method: 'POST', body: JSON.stringify({ action }) });
+    await api(withSite('/api/service'), { method: 'POST', body: JSON.stringify({ action }) });
     toast(`Restart requested for ${state.logSource}`, 'success');
     setTimeout(() => refreshLogs().catch(() => {}), 2000);
   } catch (error) {
@@ -877,7 +936,7 @@ async function toggleTunnel() {
 
 async function downloadFile(name) {
   try {
-    const response = await fetch(`${state.apiBase}/api/files/${encodeURIComponent(name)}/download`, {
+    const response = await fetch(`${state.apiBase}${withSite(`/api/files/${encodeURIComponent(name)}/download`)}`, {
       headers: state.token ? { 'X-Pocket-Token': state.token } : {},
     });
     if (response.status === 401) {
@@ -903,7 +962,7 @@ async function downloadFile(name) {
 async function deleteFile(name) {
   if (!window.confirm(`Delete "${name}" from the server?`)) return;
   try {
-    const data = await api(`/api/files/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const data = await api(withSite(`/api/files/${encodeURIComponent(name)}`), { method: 'DELETE' });
     renderFiles(data.files);
     toast(`Deleted ${name}`, 'success');
     refreshStatus().catch(() => {});
@@ -923,7 +982,7 @@ async function renameFile(name) {
   if (!trimmed || trimmed === name) return;
 
   try {
-    const data = await api(`/api/files/${encodeURIComponent(name)}/rename`, {
+    const data = await api(withSite(`/api/files/${encodeURIComponent(name)}/rename`), {
       method: 'POST',
       body: JSON.stringify({ name: trimmed }),
     });
@@ -952,7 +1011,7 @@ async function uploadFiles(fileList) {
   for (const file of files) form.append('files', file, file.name);
 
   const request = new XMLHttpRequest();
-  request.open('POST', `${state.apiBase}/api/upload`);
+  request.open('POST', `${state.apiBase}${withSite('/api/upload')}`);
   if (state.token) request.setRequestHeader('X-Pocket-Token', state.token);
 
   request.upload.addEventListener('progress', (event) => {
@@ -1009,6 +1068,16 @@ function wireEvents() {
 
   $('copy-address').addEventListener('click', () => copy(primaryAddress(state.status)));
   $('site-copy').addEventListener('click', () => copy($('site-url').textContent));
+  if ($('site-switcher')) {
+    $('site-switcher').addEventListener('change', (event) => {
+      state.siteId = event.target.value;
+      localStorage.setItem(SITE_KEY, state.siteId);
+      // Files, backups and the superuser card all belong to the site being shown.
+      refreshStatus().catch(() => {});
+      refreshFiles().catch(() => {});
+      refreshExtras(true).catch(() => {});
+    });
+  }
   $('admin-copy').addEventListener('click', () => copy($('admin-url').textContent));
   if ($('superuser-form')) $('superuser-form').addEventListener('submit', saveSuperuser);
   if ($('superuser-installer-copy')) {
