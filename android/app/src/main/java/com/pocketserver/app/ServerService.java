@@ -238,11 +238,17 @@ public class ServerService extends Service {
         writeJson(SiteRegistry.statusFile(getFilesDir()).getName(), payload);
     }
 
-    /** Process.pid() is API 26; the panel only uses it for display. */
+    /**
+     * The pid is for the dashboard only. Process.pid() is API 26 and is not in every
+     * android.jar this project is compiled against, so it is looked up instead of called.
+     */
     private static Object processPid(Process process) {
         if (process == null) return JSONObject.NULL;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return process.pid();
-        return JSONObject.NULL;
+        try {
+            return Process.class.getMethod("pid").invoke(process);
+        } catch (Exception unavailable) {
+            return JSONObject.NULL;
+        }
     }
 
     private SiteRuntime siteById(String siteId) {
