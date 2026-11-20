@@ -310,6 +310,7 @@ class Supervisor {
         pid: site.child ? site.child.pid || null : null,
         pbData: site.paths.pbData,
         publicDir: site.paths.publicDir,
+        logName: site.paths.logName,
       })),
     });
   }

@@ -801,15 +801,17 @@ async function refreshTunnel() {
 }
 
 async function refreshLogs() {
-  const data = await api(`/api/logs?source=${state.logSource}&lines=300`);
+  const data = await api(withSite(`/api/logs?source=${state.logSource}&lines=300`));
   const output = $('logs-output');
   output.textContent = data.empty
     ? 'No output yet. This view shows the log files the Android service writes for each process — restart one below if you expect output.'
     : data.lines.join('\n');
   output.scrollTop = output.scrollHeight;
+  const site = siteList(state.status).length > 1 ? selectedSite(state.status) : null;
+  const where = site ? `${site.name || site.id} · ` : '';
   $('logs-meta').textContent = data.updatedAt
-    ? `${state.logSource} · updated ${new Date(data.updatedAt).toLocaleTimeString()}`
-    : `${state.logSource} · no log file yet`;
+    ? `${where}${state.logSource} · updated ${new Date(data.updatedAt).toLocaleTimeString()}`
+    : `${where}${state.logSource} · no log file yet`;
 
   for (const name of ['pocketbase', 'cloudflared']) {
     const button = $(`log-src-${name}`);
@@ -1076,6 +1078,8 @@ function wireEvents() {
       refreshStatus().catch(() => {});
       refreshFiles().catch(() => {});
       refreshExtras(true).catch(() => {});
+      // The Logs tab shows that site's PocketBase log, so reload it too.
+      refreshLogs().catch(() => {});
     });
   }
   $('admin-copy').addEventListener('click', () => copy($('admin-url').textContent));

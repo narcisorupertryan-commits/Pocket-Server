@@ -91,6 +91,11 @@ const SITE_DIR = path.join(DATA_DIR, 'pb_public');
 /* data/sites.status.json is published by whoever owns the child processes: the Windows
  * supervisor or the Android service. Without it (a plain desktop run) there is one
  * site, on POCKETBASE_PORT. */
+function safeToken(value) {
+  const text = String(value || '');
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(text) ? text : '';
+}
+
 function readSiteStatus() {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sites.status.json'), 'utf8'));
@@ -98,7 +103,8 @@ function readSiteStatus() {
     return parsed.sites
       .filter((site) => site && Number.isInteger(Number(site.port)))
       .map((site) => ({
-        id: String(site.id || ''),
+        // The id and the log name index files below, so only plain names are accepted.
+        id: safeToken(site.id),
         name: String(site.name || site.id || ''),
         port: Number(site.port),
         legacy: site.legacy === true,
@@ -106,6 +112,7 @@ function readSiteStatus() {
         // Absolute paths only: the file routes follow this one.
         publicDir:
           typeof site.publicDir === 'string' && path.isAbsolute(site.publicDir) ? site.publicDir : '',
+        logName: safeToken(site.logName),
       }));
   } catch (error) {
     return [];
@@ -135,6 +142,13 @@ function requestSite(req) {
 function requestSiteDir(req) {
   const site = requestSite(req);
   return site && site.publicDir ? site.publicDir : SITE_DIR;
+}
+
+/** PocketBase's log for a site: logs/pocketbase.log, or logs/site-<id>.log for the others. */
+function siteLogName(site) {
+  if (!site) return 'pocketbase';
+  if (site.logName) return site.logName;
+  return site.legacy ? 'pocketbase' : `site-${site.id || 'site'}`;
 }
 
 /* Another app on the phone can already own 8080 (that is an EADDRINUSE). Rather than
@@ -691,7 +705,10 @@ app.post('/api/tunnel/token', (req, res) => {
 app.get('/api/logs', async (req, res) => {
   const source = req.query.source === 'cloudflared' ? 'cloudflared' : 'pocketbase';
   const wanted = Math.min(Math.max(Number(req.query.lines) || 200, 10), 1000);
-  const file = path.join(LOG_DIR, `${source}.log`);
+  // One tunnel serves the whole panel, so only PocketBase's log belongs to a site.
+  const site = requestSite(req);
+  const name = source === 'pocketbase' ? siteLogName(site) : source;
+  const file = path.join(LOG_DIR, `${name}.log`);
 
   let text = '';
   let updatedAt = null;
@@ -704,6 +721,8 @@ app.get('/api/logs', async (req, res) => {
 
   res.json({
     source,
+    file: `${name}.log`,
+    siteId: site ? site.id : '',
     updatedAt,
     empty: text.trim().length === 0,
     lines: text.split('\n').filter((line) => line.length > 0).slice(-wanted),
@@ -731,9 +750,20 @@ app.post('/api/service', (req, res) => {
 
 // PocketBase 0.23+ has no "create the account at /_/" flow: it prints a 30-minute
 // installer link at startup, which the service captures into installer.json.
+/** installer.json and superuser-result.json name their site once there is more than one. */
+function scopedJson(file, siteId) {
+  const value = readJsonFile(file);
+  if (!value) return null;
+  const owner = typeof value.siteId === 'string' ? value.siteId : '';
+  if (owner && siteId && owner !== siteId) return null;
+  return value;
+}
+
 app.get('/api/superuser', (req, res) => {
-  const installer = readJsonFile(INSTALLER_FILE);
-  const result = readJsonFile(SUPERUSER_RESULT_FILE);
+  const site = requestSite(req);
+  const siteId = site ? site.id : '';
+  const installer = scopedJson(INSTALLER_FILE, siteId);
+  const result = scopedJson(SUPERUSER_RESULT_FILE, siteId);
   const expiresAt = installer && installer.expiresAt ? Date.parse(installer.expiresAt) : 0;
   const expired = expiresAt > 0 && expiresAt < Date.now();
 
@@ -743,6 +773,7 @@ app.get('/api/superuser', (req, res) => {
       ? { url: installer.url, lanUrl: installer.lanUrl, expiresAt: installer.expiresAt, expired }
       : null,
     result: result || null,
+    siteId,
     available: SUPERVISED,
   });
 });
@@ -768,14 +799,16 @@ app.post('/api/superuser', (req, res) => {
     return;
   }
 
+  const target = requestSite(req);
   try {
-    fs.unlinkSync(SUPERUSER_RESULT_FILE);
+    // Only clear the result this site would read; another site's is still useful.
+    const previous = scopedJson(SUPERUSER_RESULT_FILE, target ? target.id : '');
+    if (previous) fs.unlinkSync(SUPERUSER_RESULT_FILE);
   } catch (error) {
     // No previous result to clear.
   }
 
   try {
-    const target = requestSite(req);
     const accepted = writeServiceCommand({
       action: 'create-superuser',
       email,

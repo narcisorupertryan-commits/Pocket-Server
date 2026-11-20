@@ -228,6 +228,7 @@ public class ServerService extends Service {
                 entry.put("pid", processPid(process));
                 entry.put("pbData", runtime.site.dataDir.getAbsolutePath());
                 entry.put("publicDir", runtime.site.publicDir.getAbsolutePath());
+                entry.put("logName", runtime.site.logName);
                 list.put(entry);
             }
             payload.put("sites", list);

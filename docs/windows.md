@@ -108,8 +108,9 @@ Each site is its own PocketBase — its own database, admin login, files and bac
 - Adding or removing a site needs a launcher restart for now.
 - With more than one site the dashboard grows a **Site** picker above the site
   links: it switches the site and admin addresses, the file manager, the backup
-  list and the superuser card. With a single site there is no picker and the
-  panel is exactly as it was.
+  list, the Logs tab (that site's `logs/site-<id>.log`; the Cloudflare tunnel
+  log stays shared) and the superuser card (its installer and its result). With
+  a single site there is no picker and the panel is exactly as it was.
 - The phone build reads the same file from its private folder
   (`/data/data/com.pocketserver.app/files/sites.json`), so you need `adb push` (or a
   rooted device) to add a site there today. With no such file the phone runs one site
