@@ -28,6 +28,7 @@ const COPY = [
   ['Pocket Server.bat', 'Pocket Server.bat'],
   ['windows/launch.js', 'windows/launch.js'],
   ['windows/supervisor.js', 'windows/supervisor.js'],
+  ['windows/sites.js', 'windows/sites.js'],
   ['windows/zipdir.js', 'windows/zipdir.js'],
   ['windows/selfcheck.js', 'windows/selfcheck.js'],
   ['docs/windows.md', 'docs/windows.md'],

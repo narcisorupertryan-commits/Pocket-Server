@@ -40,19 +40,6 @@ const PORT = Number(process.env.PORT) || 8080;
 const POCKETBASE_PORT = Number(process.env.POCKETBASE_PORT) || 8090;
 const HOST = '0.0.0.0';
 
-/* Another app on the phone can already own 8080 (that is an EADDRINUSE). Rather than
- * dying, walk up to the next free port and publish the one that worked, so the UI can
- * find the panel wherever it landed. 8090 belongs to PocketBase and is skipped. */
-const PORT_CANDIDATES = (() => {
-  const list = [];
-  for (let offset = 0; offset < 6; offset += 1) {
-    const candidate = PORT + offset;
-    if (candidate !== POCKETBASE_PORT && candidate > 0 && candidate < 65536) list.push(candidate);
-  }
-  return list;
-})();
-
-let activePort = PORT_CANDIDATES[0];
 
 const APP_DIR = __dirname;
 const WWW_DIR = path.join(APP_DIR, 'www');
@@ -100,6 +87,48 @@ const DATA_DIR = resolveDataDir();
 // PocketBase serves this directory as the static website and the file manager
 // writes here, so an upload is live at http://<phone>:8090/<name> immediately.
 const SITE_DIR = path.join(DATA_DIR, 'pb_public');
+
+/* data/sites.status.json is written by the Windows supervisor. The Android service
+ * does not write it, so the phone build keeps one site and one PocketBase port. */
+function readSiteStatus() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sites.status.json'), 'utf8'));
+    if (!parsed || !Array.isArray(parsed.sites)) return [];
+    return parsed.sites
+      .filter((site) => site && Number.isInteger(Number(site.port)))
+      .map((site) => ({
+        id: String(site.id || ''),
+        name: String(site.name || site.id || ''),
+        port: Number(site.port),
+        legacy: site.legacy === true,
+        state: String(site.state || 'unknown'),
+      }));
+  } catch (error) {
+    return [];
+  }
+}
+
+const SITES = readSiteStatus();
+const SITE_PORTS = new Set(SITES.map((site) => site.port));
+const PRIMARY_SITE = SITES.find((site) => site.legacy) || SITES[0] || null;
+const PRIMARY_SITE_PORT = PRIMARY_SITE ? PRIMARY_SITE.port : POCKETBASE_PORT;
+
+/* Another app on the phone can already own 8080 (that is an EADDRINUSE). Rather than
+ * dying, walk up to the next free port and publish the one that worked, so the UI can
+ * find the panel wherever it landed. Every PocketBase port is skipped — not just 8090 —
+ * because PocketBase answers /api/health too and would look like the panel. */
+const PORT_CANDIDATES = (() => {
+  const list = [];
+  for (let offset = 0; offset < 6; offset += 1) {
+    const candidate = PORT + offset;
+    if (candidate !== POCKETBASE_PORT && candidate > 0 && candidate < 65536 && !SITE_PORTS.has(candidate)) {
+      list.push(candidate);
+    }
+  }
+  return list.length > 0 ? list : [PORT];
+})();
+
+let activePort = PORT_CANDIDATES[0];
 const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const TUNNEL_STATUS_FILE = path.join(DATA_DIR, 'tunnel.status.json');
@@ -478,8 +507,9 @@ app.get('/api/status', async (req, res) => {
     // panelPort/sitePort are the explicit names the UI prefers; port/pocketbase.port
     // stay for compatibility with older copies of the dashboard.
     panelPort: activePort,
-    sitePort: POCKETBASE_PORT,
-    pocketbase: { port: POCKETBASE_PORT, siteDirectory: SITE_DIR },
+    sitePort: PRIMARY_SITE_PORT,
+    pocketbase: { port: PRIMARY_SITE_PORT, siteDirectory: SITE_DIR },
+    sites: SITES,
     defaultPin: settings.pin === DEFAULT_PIN,
   });
 });

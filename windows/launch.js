@@ -14,11 +14,15 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const supervisorModule = require('./supervisor');
+const { loadSites } = require('./sites');
 
 const ROOT = path.resolve(__dirname, '..');
 const PANEL_PORT = Number(process.env.PORT) || 8080;
 const POCKETBASE_PORT = Number(process.env.POCKETBASE_PORT) || 8090;
 const args = process.argv.slice(2);
+// The same registry the supervisor reads: every site port must be left to PocketBase.
+const registry = loadSites({ dataDir: supervisorModule.paths.DATA_DIR, legacyPort: POCKETBASE_PORT });
+const SITE_PORTS = new Set(registry.sites.map((site) => site.port));
 const noOpen = args.includes('--no-open') || process.env.POCKET_SERVER_NO_OPEN === '1';
 
 const serverEntry = path.join(ROOT, 'public', 'nodejs', 'server.js');
@@ -77,7 +81,7 @@ async function waitForPanel() {
   while (Date.now() < deadline) {
     for (let offset = 0; offset < 6; offset += 1) {
       const port = PANEL_PORT + offset;
-      if (port === POCKETBASE_PORT) continue;
+      if (SITE_PORTS.has(port)) continue;
       if (!(await probe(port))) continue;
       if (await healthy(port)) return port;
     }
@@ -180,7 +184,7 @@ async function main() {
 
   const url = `http://127.0.0.1:${port}`;
   say(`panel ${url}`);
-  say(`site  http://127.0.0.1:${POCKETBASE_PORT}`);
+  for (const site of registry.sites) say(`site  http://127.0.0.1:${site.port}  ${site.name}`);
   say('close this window or press Ctrl+C to stop everything');
   openBrowser(url);
 }

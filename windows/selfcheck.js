@@ -13,11 +13,13 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { loadSites, pathsFor } = require('./sites');
 
 const ROOT = path.resolve(process.env.POCKET_SERVER_ROOT || path.join(__dirname, '..'));
 const DATA_DIR = path.resolve(process.env.POCKET_SERVER_DATA || path.join(ROOT, 'data'));
 const POCKETBASE_PORT = Number(process.env.POCKETBASE_PORT) || 8090;
 const PANEL_PORT = Number(process.env.PORT) || 8080;
+const registry = loadSites({ dataDir: DATA_DIR, legacyPort: POCKETBASE_PORT });
 
 const problems = [];
 
@@ -100,20 +102,32 @@ async function main() {
   const panelEntry = path.join(ROOT, 'public', 'nodejs', 'server.js');
   line('panel', fs.existsSync(panelEntry) ? panelEntry : 'public/nodejs/server.js is missing');
 
+  console.log('\nSites');
+  line('registry', `${registry.file} (${registry.source})`);
+  for (const problem of registry.problems) line('problem', problem);
+  for (const site of registry.sites) {
+    const paths = pathsFor(site, DATA_DIR);
+    line(`${site.id} :${site.port}`, `${paths.pbData}${site.legacy ? ' (original folder)' : ''}`);
+  }
+
   console.log('\nPorts');
-  for (const port of [PANEL_PORT, PANEL_PORT + 1, POCKETBASE_PORT]) {
+  for (const port of [PANEL_PORT, PANEL_PORT + 1, ...registry.sites.map((site) => site.port)]) {
     line(String(port), (await probePort(port)) ? 'something is listening' : 'free');
   }
 
   console.log('\nAnswers');
   const health = await get(PANEL_PORT, '/api/health');
   line('panel /api/health', health.status ? `${health.status} ${health.body.slice(0, 80)}` : 'no answer');
-  const pb = await get(POCKETBASE_PORT, '/api/health');
-  line('PocketBase /api/health', pb.status ? `${pb.status} ${pb.body.slice(0, 80)}` : 'no answer');
-  if (!pb.status) problems.push('PocketBase is not answering on its port — check data/logs/pocketbase.log.');
+  for (const site of registry.sites) {
+    const answer = await get(site.port, '/api/health');
+    line(`${site.id} /api/health`, answer.status ? `${answer.status} ${answer.body.slice(0, 80)}` : 'no answer');
+    if (!answer.status) {
+      problems.push(`site "${site.id}" is not answering on ${site.port} — check data/logs/${pathsFor(site, DATA_DIR).logName}.log.`);
+    }
+  }
 
   console.log('\nData');
-  for (const file of ['settings.json', 'power.status.json', 'tunnel.status.json', 'backup.status.json', 'installer.json']) {
+  for (const file of ['sites.json', 'sites.status.json', 'settings.json', 'power.status.json', 'tunnel.status.json', 'backup.status.json', 'installer.json']) {
     const full = path.join(DATA_DIR, file);
     if (!fs.existsSync(full)) {
       line(file, 'absent');

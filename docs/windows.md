@@ -75,12 +75,49 @@ never sent to the browser.
 Copying the whole folder to another PC keeps everything. `data\` is created next to
 `node.exe`, so a fresh folder always starts clean.
 
+## More than one site
+
+By default the folder runs one site on 8090, exactly as before. To run a second one,
+create `data\sites.json` and start the launcher again:
+
+```json
+{
+  "version": 1,
+  "sites": [
+    { "id": "default", "name": "Primary", "port": 8090, "legacy": true },
+    { "id": "second", "name": "Second site", "port": 8091 }
+  ]
+}
+```
+
+Each site is its own PocketBase — its own database, admin login, files and backups:
+
+| Site | Port | Data | Log |
+| --- | --- | --- | --- |
+| the entry marked `"legacy": true` (or with the id `default`) | its `port` | `data\pb_data`, `data\pb_public` | `data\logs\pocketbase.log` |
+| every other id | its `port` | `data\sites\<id>\pb_data`, `…\pb_public` | `data\logs\site-<id>.log` |
+
+- **Upgrading changes nothing.** With no `sites.json` the build behaves exactly like the
+  single-site one: same port, same folders, no migration step. A folder from an older
+  version is used in place, including its existing `runtime.json`.
+- The `legacy` entry is the one that keeps the original folders. Point it at a
+  different `port` if 8090 is taken; the data stays where it is.
+- Ports 8080–8085 belong to the dashboard and are refused. Leave `port` out and the
+  next free port from 8091 is used.
+- A broken entry is logged and skipped — the remaining sites still start.
+- Adding or removing a site needs a launcher restart for now, and the dashboard still
+  shows the primary site. The Android build has no registry yet.
+- Firewall: allow each site's port, e.g.
+  `netsh advfirewall firewall add rule name="Pocket Server site 2" dir=in action=allow protocol=TCP localport=8091`.
+
 ## How it works
 
 On Android, `ServerService.java` owns the child processes and talks to the panel
 through command files. On Windows, `windows/supervisor.js` does exactly the same job:
 
-- spawns `pocketbase.exe serve --http=0.0.0.0:8090 --dir=… --publicDir=…`;
+- spawns one `pocketbase.exe serve --http=0.0.0.0:<port> --dir=… --publicDir=…` per site
+  listed in `data\sites.json` (just one, on 8090, when there is no such file);
+- publishes the live list to `data\sites.status.json` and the pids to `data\runtime.json`;
 - watches `data\service.command.json` and `data\tunnel.command.json`, deleting each
   one after it runs (restart, backup, superuser, power off/on, tunnel start/stop);
 - writes `power.status.json`, `tunnel.status.json`, `installer.json`,

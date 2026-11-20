@@ -20,6 +20,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { writeZipDir } = require('./zipdir');
+const { loadSites, pathsFor, registryPath, statusPath } = require('./sites');
 
 const IS_WIN = process.platform === 'win32';
 const ROOT = path.resolve(process.env.POCKET_SERVER_ROOT || path.join(__dirname, '..'));
@@ -61,7 +62,7 @@ const log = (...args) => console.log('[supervisor]', ...args);
  * ------------------------------------------------------------------ */
 
 function ensureDirs() {
-  for (const dir of [DATA_DIR, PB_DATA, SITE_DIR, LOG_DIR]) {
+  for (const dir of [DATA_DIR, LOG_DIR]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
@@ -182,9 +183,17 @@ class Supervisor {
   constructor() {
     this.stopping = false;
     this.serversDesired = true;
-    this.paused = false;
-    this.restartRequested = false;
-    this.pocketbase = null;
+    // One PocketBase per site. Without data/sites.json this is the same single
+    // site, on the same port and in the same folders, as the build before it.
+    this.registry = loadSites({ dataDir: DATA_DIR, legacyPort: POCKETBASE_PORT });
+    this.sites = this.registry.sites.map((config) => ({
+      config,
+      paths: pathsFor(config, DATA_DIR),
+      child: null,
+      paused: false,
+      restartRequested: false,
+    }));
+    this.sitesStatusFile = statusPath(DATA_DIR);
     this.cloudflared = null;
     this.panelPid = null;
     this.busy = false;
@@ -199,22 +208,44 @@ class Supervisor {
 
   start() {
     ensureDirs();
+    for (const site of this.sites) {
+      fs.mkdirSync(site.paths.pbData, { recursive: true });
+      fs.mkdirSync(site.paths.publicDir, { recursive: true });
+    }
     this.cleanupOrphans();
     this.writePowerStatus();
     if (this.tunnelState !== 'running') this.writeTunnelStatus();
     log(`root ${ROOT}`);
     log(`data ${DATA_DIR}`);
-    log(`pocketbase port ${POCKETBASE_PORT}, panel port ${PANEL_PORT}`);
+    log(`registry ${registryPath(DATA_DIR)} (${this.registry.source})`);
+    for (const problem of this.registry.problems) log(problem);
+    log(`panel port ${PANEL_PORT}, ${this.sites.length} site${this.sites.length === 1 ? '' : 's'}`);
+    for (const site of this.sites) {
+      log(`site ${site.config.id}: http://127.0.0.1:${site.config.port} — ${site.paths.pbData}`);
+    }
 
-    this.loop = this.pocketbaseLoop().catch((error) => {
-      log('PocketBase supervisor crashed:', error.message);
-      appendLog('pocketbase', `failed: ${error.message}`);
-    });
+    this.loops = this.sites.map((site) =>
+      this.pocketbaseLoop(site).catch((error) => {
+        log(`PocketBase supervisor for ${site.config.id} crashed:`, error.message);
+        appendLog(site.paths.logName, `failed: ${error.message}`);
+      }),
+    );
 
     this.timers.push(setInterval(() => this.watchCommands(), COMMAND_POLL_MS));
     this.timers.push(setInterval(() => this.ensurePocketbaseRunning(), 15000));
     this.recordRuntime();
     return this;
+  }
+
+  /** One site by id; with no id the site that owns the original data folder. */
+  site(siteId) {
+    const id = typeof siteId === 'string' ? siteId.trim() : '';
+    if (!id) return this.legacySite();
+    return this.sites.find((entry) => entry.config.id === id) || null;
+  }
+
+  legacySite() {
+    return this.sites.find((entry) => entry.config.legacy) || this.sites[0] || null;
   }
 
   async stop() {
@@ -228,10 +259,11 @@ class Supervisor {
       this.kill(this.cloudflared);
       this.cloudflared = null;
     }
-    if (this.pocketbase) {
-      appendLog('pocketbase', '--- stopped with the launcher ---');
-      this.kill(this.pocketbase);
-      this.pocketbase = null;
+    for (const site of this.sites) {
+      if (!site.child) continue;
+      appendLog(site.paths.logName, '--- stopped with the launcher ---');
+      this.kill(site.child);
+      site.child = null;
     }
     try {
       fs.unlinkSync(this.runtimeFile);
@@ -247,12 +279,38 @@ class Supervisor {
     // A child's exit event still fires while we shut down; writing then would leave a
     // pidfile behind for a run that has already ended.
     if (this.stopping) return;
+    const legacy = this.legacySite();
     writeJson(this.runtimeFile, {
       launcherPid: process.pid,
       panelPid: this.panelPid,
-      pocketbasePid: this.pocketbase ? this.pocketbase.pid || null : null,
+      // A build from before the registry only knows this one key, so it is kept:
+      // an older launcher must still be able to clear this run's leftovers.
+      pocketbasePid: legacy && legacy.child ? legacy.child.pid || null : null,
       cloudflaredPid: this.cloudflared ? this.cloudflared.pid || null : null,
+      sites: this.sites.map((site) => ({
+        id: site.config.id,
+        port: site.config.port,
+        pocketbasePid: site.child ? site.child.pid || null : null,
+      })),
       updatedAt: isoNow(),
+    });
+    this.writeSitesStatus();
+  }
+
+  /** Published for the panel and the launcher: never read sites.json twice differently. */
+  writeSitesStatus() {
+    writeJson(this.sitesStatusFile, {
+      at: isoNow(),
+      sites: this.sites.map((site) => ({
+        id: site.config.id,
+        name: site.config.name,
+        port: site.config.port,
+        legacy: site.config.legacy,
+        state: site.child && !site.paused ? 'running' : this.serversDesired && !site.paused ? 'starting' : 'stopped',
+        pid: site.child ? site.child.pid || null : null,
+        pbData: site.paths.pbData,
+        publicDir: site.paths.publicDir,
+      })),
     });
   }
 
@@ -285,9 +343,17 @@ class Supervisor {
     const owner = Number(previous.launcherPid) || 0;
     if (owner && owner !== process.pid && Supervisor.isAlive(owner)) return; // another instance owns them
 
+    // A record written before the site registry has no sites[] array: the flat keys
+    // are read as well, so an upgrade still clears a dead pocketbase.exe on 8090.
+    const pids = [Number(previous.panelPid) || 0, Number(previous.pocketbasePid) || 0, Number(previous.cloudflaredPid) || 0];
+    if (Array.isArray(previous.sites)) {
+      for (const entry of previous.sites) {
+        if (entry && typeof entry === 'object') pids.push(Number(entry.pocketbasePid) || 0);
+      }
+    }
+
     // The panel goes first: it is what holds the port the next run wants.
-    for (const key of ['panelPid', 'pocketbasePid', 'cloudflaredPid']) {
-      const pid = Number(previous[key]) || 0;
+    for (const pid of pids) {
       if (!pid || pid === process.pid) continue;
       if (!Supervisor.isAlive(pid)) continue;
       log(`clearing a leftover process from the last run (pid ${pid})`);
@@ -322,30 +388,31 @@ class Supervisor {
 
   /* ---------------- PocketBase ---------------- */
 
-  async pocketbaseLoop() {
+  async pocketbaseLoop(site) {
+    const { port } = site.config;
     let restarts = 0;
 
     while (!this.stopping) {
-      if (!this.serversDesired || this.paused) {
+      if (!this.serversDesired || site.paused) {
         await sleep(250);
         continue;
       }
 
       const binary = resolveBinary('pocketbase');
       if (!binary) {
-        appendLog('pocketbase', '--- pocketbase binary missing next to node.exe ---');
+        appendLog(site.paths.logName, '--- pocketbase binary missing next to node.exe ---');
         await sleep(8000);
         continue;
       }
 
-      fs.mkdirSync(PB_DATA, { recursive: true });
-      fs.mkdirSync(SITE_DIR, { recursive: true });
+      fs.mkdirSync(site.paths.pbData, { recursive: true });
+      fs.mkdirSync(site.paths.publicDir, { recursive: true });
 
       let child;
       try {
         child = spawn(
           binary,
-          ['serve', `--http=0.0.0.0:${POCKETBASE_PORT}`, `--dir=${PB_DATA}`, `--publicDir=${SITE_DIR}`],
+          ['serve', `--http=0.0.0.0:${port}`, `--dir=${site.paths.pbData}`, `--publicDir=${site.paths.publicDir}`],
           {
             cwd: DATA_DIR,
             windowsHide: true,
@@ -353,65 +420,65 @@ class Supervisor {
           },
         );
       } catch (error) {
-        appendLog('pocketbase', `failed to start: ${error.message}`);
+        appendLog(site.paths.logName, `failed to start: ${error.message}`);
         await sleep(2000);
         continue;
       }
 
-      this.pocketbase = child;
-      appendLog('pocketbase', '--- started ---');
+      site.child = child;
+      appendLog(site.paths.logName, '--- started ---');
       this.recordRuntime();
 
-      pipeLines(child.stdout, (line) => {
-        appendLog('pocketbase', line);
-        this.captureInstaller(line);
-      });
-      pipeLines(child.stderr, (line) => {
-        appendLog('pocketbase', line);
-        this.captureInstaller(line);
-      });
+      const onLine = (line) => {
+        appendLog(site.paths.logName, line);
+        this.captureInstaller(line, site);
+      };
+      pipeLines(child.stdout, onLine);
+      pipeLines(child.stderr, onLine);
 
       const code = await new Promise((resolve) => {
         child.once('error', (error) => {
-          appendLog('pocketbase', `failed: ${error.message}`);
+          appendLog(site.paths.logName, `failed: ${error.message}`);
           resolve(-1);
         });
         child.once('exit', (exitCode) => resolve(exitCode === null ? -1 : exitCode));
       });
 
-      if (this.pocketbase === child) this.pocketbase = null;
+      if (site.child === child) site.child = null;
       this.recordRuntime();
-      appendLog('pocketbase', `--- exited ${code} ---`);
+      appendLog(site.paths.logName, `--- exited ${code} ---`);
       if (this.stopping) return;
 
-      if (this.restartRequested) {
-        this.restartRequested = false;
+      if (site.restartRequested) {
+        site.restartRequested = false;
         restarts = 0;
-        appendLog('pocketbase', '--- restarted from the dashboard ---');
+        appendLog(site.paths.logName, '--- restarted from the dashboard ---');
         continue;
       }
-      if (this.paused || !this.serversDesired) continue;
+      if (site.paused || !this.serversDesired) continue;
 
       restarts += 1;
       if (restarts > MAX_RESTARTS) {
-        appendLog('pocketbase', `--- gave up after ${MAX_RESTARTS} restarts ---`);
+        appendLog(site.paths.logName, `--- gave up after ${MAX_RESTARTS} restarts ---`);
         await sleep(15000);
         restarts = 0;
         continue;
       }
-      appendLog('pocketbase', `--- restarting (${restarts}/${MAX_RESTARTS}) ---`);
+      appendLog(site.paths.logName, `--- restarting (${restarts}/${MAX_RESTARTS}) ---`);
       await sleep(1500 * restarts);
     }
   }
 
   /** Safety net: a child that died without the loop noticing gets restarted. */
   ensurePocketbaseRunning() {
-    if (this.stopping || !this.serversDesired || this.paused) return;
-    if (this.pocketbase) return;
-    this.restartRequested = true;
+    if (this.stopping || !this.serversDesired) return;
+    for (const site of this.sites) {
+      if (site.child || site.paused) continue;
+      site.restartRequested = true;
+    }
   }
 
-  captureInstaller(line) {
+  captureInstaller(line, site) {
     if (!line.includes('/_/#/pbinstall/')) return;
     const match = INSTALLER_PATH.exec(line);
     if (!match) return;
@@ -419,28 +486,34 @@ class Supervisor {
     const suffix = match[1];
     const token = suffix.split('/').pop();
     const now = Date.now();
+    const { port } = site.config;
     const wrote = writeJson(FILES.installer, {
+      siteId: site.config.id,
+      port,
       token,
       path: suffix,
-      url: `http://127.0.0.1:${POCKETBASE_PORT}${suffix}`,
-      lanUrl: `http://${lanIp()}:${POCKETBASE_PORT}${suffix}`,
+      url: `http://127.0.0.1:${port}${suffix}`,
+      lanUrl: `http://${lanIp()}:${port}${suffix}`,
       createdAt: isoNow(now),
       expiresAt: isoNow(now + INSTALLER_TTL_MS),
     });
-    if (wrote) appendLog('pocketbase', '--- installer link captured (valid 30 minutes) ---');
+    if (wrote) appendLog(site.paths.logName, '--- installer link captured (valid 30 minutes) ---');
   }
 
-  async pausePocketbase() {
-    this.paused = true;
-    const child = this.pocketbase;
+  /** Stop one site and wait for it, without touching the others. */
+  async pauseSite(site) {
+    site.paused = true;
+    const child = site.child;
     if (child) this.kill(child);
     const deadline = Date.now() + 8000;
-    while (this.pocketbase && Date.now() < deadline) await sleep(100);
+    while (site.child && Date.now() < deadline) await sleep(100);
+    this.writeSitesStatus();
   }
 
-  resumePocketbase() {
-    this.paused = false;
-    this.restartRequested = true;
+  resumeSite(site) {
+    site.paused = false;
+    site.restartRequested = true;
+    this.writeSitesStatus();
   }
 
   /* ---------------- cloudflared ---------------- */
@@ -587,9 +660,14 @@ class Supervisor {
     const action = typeof service.action === 'string' ? service.action : '';
 
     if (action === 'restart-pocketbase') {
-      appendLog('pocketbase', '--- restart requested ---');
-      this.restartRequested = true;
-      if (this.pocketbase) this.kill(this.pocketbase);
+      const site = this.site(service.siteId);
+      if (!site) {
+        log(`restart ignored: there is no site called "${service.siteId}"`);
+        return;
+      }
+      appendLog(site.paths.logName, '--- restart requested ---');
+      site.restartRequested = true;
+      if (site.child) this.kill(site.child);
       return;
     }
     if (action === 'restart-tunnel') {
@@ -605,11 +683,11 @@ class Supervisor {
       return;
     }
     if (action === 'create-superuser') {
-      this.runExclusive(() => this.createSuperuser(service.email, service.password));
+      this.runExclusive(() => this.createSuperuser(service.email, service.password, service.siteId), service.siteId);
       return;
     }
     if (action === 'backup') {
-      this.runExclusive(() => this.runBackup());
+      this.runExclusive(() => this.runBackup(service.siteId), service.siteId);
       return;
     }
     log(`ignored unknown service command: ${action}`);
@@ -631,13 +709,14 @@ class Supervisor {
     return command;
   }
 
-  async runExclusive(job) {
+  async runExclusive(job, siteId) {
     this.busy = true;
     try {
       await job();
     } catch (error) {
       log('command failed:', error.message);
-      appendLog('pocketbase', `--- command failed: ${error.message} ---`);
+      const site = this.site(siteId);
+      appendLog(site ? site.paths.logName : 'pocketbase', `--- command failed: ${error.message} ---`);
     } finally {
       this.busy = false;
     }
@@ -652,23 +731,30 @@ class Supervisor {
   stopServers() {
     this.serversDesired = false;
     this.stopTunnel('Servers were turned off from the dashboard.');
-    if (this.pocketbase) this.kill(this.pocketbase);
-    appendLog('pocketbase', '--- servers stopped from the dashboard ---');
+    for (const site of this.sites) {
+      if (site.child) this.kill(site.child);
+      appendLog(site.paths.logName, '--- servers stopped from the dashboard ---');
+    }
     this.writePowerStatus();
   }
 
   startServers() {
     this.serversDesired = true;
-    this.restartRequested = true;
-    appendLog('pocketbase', '--- servers started from the dashboard ---');
+    for (const site of this.sites) site.restartRequested = true;
+    const legacy = this.legacySite();
+    if (legacy) appendLog(legacy.paths.logName, '--- servers started from the dashboard ---');
     this.writePowerStatus();
   }
 
   /* ---------------- superuser ---------------- */
 
-  async createSuperuser(email, password) {
+  async createSuperuser(email, password, siteId) {
+    const site = this.site(siteId);
+    if (!site) {
+      return this.finishSuperuser({ at: isoNow(), email: '', siteId: siteId || null }, false, `There is no site called "${siteId}".`);
+    }
     const address = typeof email === 'string' ? email.trim() : '';
-    const result = { at: isoNow(), email: address };
+    const result = { at: isoNow(), email: address, siteId: site.config.id };
 
     if (!address.includes('@')) {
       return this.finishSuperuser(result, false, 'Enter a valid email address.');
@@ -682,11 +768,11 @@ class Supervisor {
       return this.finishSuperuser(result, false, 'The PocketBase binary is missing from this folder.');
     }
 
-    await this.pausePocketbase();
+    await this.pauseSite(site);
     let output = '';
     let code = -1;
     try {
-      const child = spawn(binary, ['superuser', 'upsert', address, password, `--dir=${PB_DATA}`], {
+      const child = spawn(binary, ['superuser', 'upsert', address, password, `--dir=${site.paths.pbData}`], {
         cwd: DATA_DIR,
         windowsHide: true,
         env: { ...process.env, HOME: DATA_DIR },
@@ -714,20 +800,24 @@ class Supervisor {
     } catch (error) {
       output = error.message;
     } finally {
-      this.resumePocketbase();
+      this.resumeSite(site);
     }
 
     const text = output.replace(password, '***').trim();
     if (code === 0) {
-      try {
-        fs.unlinkSync(FILES.installer);
-      } catch (error) {
-        /* no installer link to clear */
+      const installer = readJson(FILES.installer);
+      // Only clear the link this site printed — another site's is still useful.
+      if (!installer || !installer.siteId || installer.siteId === site.config.id) {
+        try {
+          fs.unlinkSync(FILES.installer);
+        } catch (error) {
+          /* no installer link to clear */
+        }
       }
-      appendLog('pocketbase', `--- superuser saved: ${address} ---`);
+      appendLog(site.paths.logName, `--- superuser saved: ${address} ---`);
       return this.finishSuperuser(result, true, 'Superuser saved. Sign in at /_/ with that email and password.');
     }
-    appendLog('pocketbase', `--- superuser command failed (exit ${code}) ---`);
+    appendLog(site.paths.logName, `--- superuser command failed (exit ${code}) ---`);
     return this.finishSuperuser(
       result,
       false,
@@ -741,40 +831,45 @@ class Supervisor {
 
   /* ---------------- backups ---------------- */
 
-  async runBackup() {
+  async runBackup(siteId) {
+    const site = this.site(siteId);
+    if (!site) {
+      writeJson(FILES.backup, { ok: false, siteId: siteId || null, error: `There is no site called "${siteId}".`, at: isoNow() });
+      return;
+    }
     const name = `pb-${stamp()}.zip`;
-    const target = path.join(BACKUP_DIR, name);
-    const status = {};
+    const target = path.join(site.paths.backups, name);
+    const status = { siteId: site.config.id, port: site.config.port };
 
     try {
-      await this.pausePocketbase();
-      fs.mkdirSync(BACKUP_DIR, { recursive: true });
-      const result = writeZipDir(PB_DATA, target);
-      const kept = this.pruneBackups();
+      await this.pauseSite(site);
+      fs.mkdirSync(site.paths.backups, { recursive: true });
+      const result = writeZipDir(site.paths.pbData, target);
+      const kept = this.pruneBackups(site.paths.backups);
       Object.assign(status, { ok: true, file: name, bytes: result.sourceBytes, kept });
-      appendLog('pocketbase', `--- backup written: ${name} (${Math.round(result.sourceBytes / 1024)} KiB, ${result.entries} files) ---`);
+      appendLog(site.paths.logName, `--- backup written: ${name} (${Math.round(result.sourceBytes / 1024)} KiB, ${result.entries} files) ---`);
     } catch (error) {
       Object.assign(status, { ok: false, error: error.message });
-      appendLog('pocketbase', `--- backup failed: ${error.message} ---`);
+      appendLog(site.paths.logName, `--- backup failed: ${error.message} ---`);
     } finally {
-      this.resumePocketbase();
+      this.resumeSite(site);
     }
 
     writeJson(FILES.backup, { ...status, at: isoNow() });
   }
 
-  pruneBackups() {
+  pruneBackups(backupDir) {
     let names = [];
     try {
       names = fs
-        .readdirSync(BACKUP_DIR)
+        .readdirSync(backupDir)
         .filter((entry) => entry.startsWith('pb-') && entry.endsWith('.zip'));
     } catch (error) {
       return 0;
     }
     const sorted = names
       .map((entry) => {
-        const file = path.join(BACKUP_DIR, entry);
+        const file = path.join(backupDir, entry);
         return { file, at: fs.statSync(file).mtimeMs };
       })
       .sort((left, right) => right.at - left.at);
@@ -801,4 +896,18 @@ function start() {
   return supervisor;
 }
 
-module.exports = { Supervisor, start, paths: { ROOT, DATA_DIR, PB_DATA, SITE_DIR, LOG_DIR, BACKUP_DIR } };
+module.exports = {
+  Supervisor,
+  start,
+  paths: {
+    ROOT,
+    DATA_DIR,
+    PB_DATA,
+    SITE_DIR,
+    LOG_DIR,
+    BACKUP_DIR,
+    SITES_FILE: registryPath(DATA_DIR),
+    SITES_STATUS_FILE: statusPath(DATA_DIR),
+    sitePaths: (site) => pathsFor(site, DATA_DIR),
+  },
+};

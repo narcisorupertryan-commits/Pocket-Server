@@ -15,6 +15,7 @@
     "windows:check": "node windows/selfcheck.js",
     "windows:fetch": "node scripts/fetch-windows-deps.mjs",
     "windows:pack": "node scripts/pack-windows.mjs",
+    "verify:multisite": "node scripts/verify-multisite.mjs",
     "cap:add": "npx cap add android",
     "cap:sync": "npm run sync:ui && npx cap sync android",
     "apk:lite": "npm run cap:sync && cd android && ./gradlew assembleLiteDebug",
