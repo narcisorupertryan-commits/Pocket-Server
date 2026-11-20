@@ -253,6 +253,13 @@ jobs:
             echo "POCKET_SERVER_KEYPASS=$KEY_PASS"
           } >> "$GITHUB_ENV"
 
+      # The registry decides what the phone starts: with no sites.json it must resolve to
+      # exactly one site on 8090 in the original pb_data/pb_public folders.
+      - name: Check the site registry
+        run: |
+          cd android
+          ./gradlew testLiteDebugUnitTest --no-daemon
+
       - name: Build
         run: |
           cd android
