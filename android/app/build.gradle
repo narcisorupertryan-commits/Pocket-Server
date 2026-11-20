@@ -91,6 +91,15 @@ android {
         }
     }
 
+    // A green unit-test step should name the checks it ran, not only say BUILD SUCCESSFUL.
+    testOptions {
+        unitTests.all {
+            testLogging {
+                events 'passed', 'failed', 'skipped'
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
