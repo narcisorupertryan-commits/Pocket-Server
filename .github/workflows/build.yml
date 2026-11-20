@@ -17,9 +17,26 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  sites-check:
+    name: Multi-site and upgrade check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Stubbed PocketBase: the registry, the per-site folders and the upgrade path are
+      # proven in seconds, before the slower Windows build spends a runner on them.
+      - name: Prove the upgrade path and a second site
+        run: node scripts/verify-multisite.mjs
+
   windows:
     name: Windows x64 (portable)
     runs-on: windows-latest
+    needs: sites-check
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +125,68 @@ jobs:
             $tunnel = Invoke-RestMethod 'http://127.0.0.1:8080/api/tunnel' -Headers $headers
             if (-not $tunnel.available) { throw 'The tunnel card reported unavailable although cloudflared is bundled' }
             Write-Host 'Tunnel card is available'
+          }
+          finally {
+            if ($launcher -and -not $launcher.HasExited) { taskkill /PID $launcher.Id /T /F | Out-Null }
+            Start-Sleep -Seconds 2
+            Get-Process pocketbase, cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+      # The upgrade path with the real binaries: the data folder the first run wrote is
+      # reused untouched, and a second site starts beside it on 8091.
+      - name: Upgrade in place and add a second site
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pack = 'dist\PocketServer-windows-x64'
+          $data = Join-Path $pack 'data'
+
+          if (-not (Test-Path (Join-Path $data 'pb_data\data.db'))) { throw 'The first run left no database in data\pb_data' }
+          $probe = Join-Path $data 'pb_data\upgrade-probe.txt'
+          Set-Content -Path $probe -Value 'written before the second start' -NoNewline
+          $oldBackup = Get-ChildItem (Join-Path $data 'pb_public\backups\*.zip') | Select-Object -First 1
+          if (-not $oldBackup) { throw 'The backup from the first run is missing' }
+
+          $registry = @{
+            version = 1
+            sites = @(
+              @{ id = 'default'; name = 'Primary'; port = 8090; legacy = $true },
+              @{ id = 'second'; name = 'Second site'; port = 8091 }
+            )
+          }
+          [IO.File]::WriteAllText((Join-Path $data 'sites.json'), ($registry | ConvertTo-Json -Depth 5))
+
+          $launcher = Start-Process -FilePath (Join-Path $pack 'node.exe') -ArgumentList (Join-Path $pack 'windows\launch.js'),'--no-open' -PassThru -NoNewWindow
+          try {
+            $both = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Seconds 3
+              $legacy = $false
+              $second = $false
+              try { $legacy = (Invoke-RestMethod 'http://127.0.0.1:8090/api/health' -TimeoutSec 4).code -eq 200 } catch { }
+              try { $second = (Invoke-RestMethod 'http://127.0.0.1:8091/api/health' -TimeoutSec 4).code -eq 200 } catch { }
+              if ($legacy -and $second) { $both = $true; break }
+            }
+            if (-not $both) {
+              Get-ChildItem (Join-Path $data 'logs') -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "--- $($_.Name) ---"
+                Get-Content $_.FullName -Tail 30
+              }
+              throw 'The second site never answered on :8091'
+            }
+            Write-Host 'Both sites answer on :8090 and :8091'
+
+            if (-not (Test-Path (Join-Path $data 'pb_data\data.db'))) { throw 'The original database is gone' }
+            if ((Get-Content $probe -Raw) -ne 'written before the second start') { throw 'The original data folder was modified' }
+            if (-not (Test-Path (Join-Path (Join-Path $data 'pb_public\backups') $oldBackup.Name))) { throw 'The old backup was not preserved' }
+            if (-not (Test-Path (Join-Path $data 'sites\second\pb_data\data.db'))) { throw 'The second site has no database of its own' }
+            Write-Host 'The original folder is intact and the second site has its own database'
+
+            $login = Invoke-RestMethod 'http://127.0.0.1:8080/api/login' -Method Post -ContentType 'application/json' -Body '{"pin":"1234"}'
+            $status = Invoke-RestMethod 'http://127.0.0.1:8080/api/status' -Headers @{ 'X-Pocket-Token' = $login.token }
+            Write-Host "sites: $($status.sites | ForEach-Object { $_.id + ':' + $_.port } | Join-String -Separator ' ')"
+            if ($status.sites.Count -ne 2) { throw "The panel reported $($status.sites.Count) sites" }
+            if ($status.sitePort -ne 8090) { throw "The panel's primary site is on $($status.sitePort)" }
           }
           finally {
             if ($launcher -and -not $launcher.HasExited) { taskkill /PID $launcher.Id /T /F | Out-Null }
