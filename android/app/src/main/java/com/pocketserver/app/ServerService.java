@@ -17,6 +17,7 @@ import android.util.Log;
 
 import androidx.annotation.Nullable;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -49,13 +50,18 @@ import java.util.regex.Pattern;
  *                                                admin UI and the static site host.
  *   Express (Capacitor Node runtime) on :8080 -> control panel + file manager.
  *
+ * filesDir/sites.json may list more than one site: each gets its own PocketBase on its
+ * own port, with its own database, files, backups and log (see SiteRegistry). Without
+ * that file there is exactly one site on 8090 in filesDir/pb_data and filesDir/pb_public
+ * — the folders every earlier version used — so an update needs no migration.
+ *
  * This service holds a partial wake lock, keeps the app process (and therefore the
  * in-process Node runtime) alive, starts and restarts PocketBase, and owns the
  * cloudflared child process. It cannot talk to Express directly, so the panel drives it
  * through files in filesDir:
  *
  *   tunnel.command.json   {action, mode, port}      panel -> service
- *   service.command.json  {action}                  panel -> service
+ *   service.command.json  {action, siteId?}         panel -> service
  *   tunnel.status.json    {state, mode, url, ...}   service -> panel
  *   logs/pocketbase.log, logs/cloudflared.log       service -> panel (diagnostics)
  *
@@ -83,15 +89,14 @@ public class ServerService extends Service {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private volatile Process pocketbase;
+    /** One PocketBase per site, in the order the registry lists them. */
+    private final List<SiteRuntime> sites = new ArrayList<>();
     private volatile Process cloudflared;
-    private volatile boolean restartPocketbaseNow = false;
 
     private volatile String tunnelState = "stopped";
     private volatile String tunnelMode = "quick";
     private volatile String tunnelUrl = null;
     private volatile String tunnelMessage = "";
-    private volatile boolean pocketbasePaused = false;
     /** Dashboard master switch: false stops PocketBase and the tunnel but keeps the panel. */
     private volatile boolean serversDesired = true;
     private volatile boolean tunnelStopping = false;
@@ -100,7 +105,6 @@ public class ServerService extends Service {
 
     private int lastTunnelPort = PANEL_PORT;
 
-    private Thread supervisor;
     private Thread commandLoop;
     private PowerManager.WakeLock wakeLock;
 
@@ -117,18 +121,21 @@ public class ServerService extends Service {
     public void onCreate() {
         super.onCreate();
         new File(getFilesDir(), "logs").mkdirs();
+        loadSites();
 
         createChannel();
-        startForegroundCompat(buildNotification("Starting PocketBase on :" + POCKETBASE_PORT));
+        startForegroundCompat(buildNotification(notificationText()));
         acquireWakeLock();
         writePowerStatus();
 
         running.set(true);
 
         writeTunnelStatus();
-        supervisor = new Thread(this::supervisePocketBase, "pocketbase-supervisor");
-        supervisor.setDaemon(true);
-        supervisor.start();
+        for (SiteRuntime runtime : sites) {
+            Thread thread = new Thread(() -> superviseSite(runtime), "pocketbase-" + runtime.site.id);
+            thread.setDaemon(true);
+            thread.start();
+        }
 
         commandLoop = new Thread(this::watchCommands, "service-commands");
         commandLoop.setDaemon(true);
@@ -140,7 +147,7 @@ public class ServerService extends Service {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             running.set(false);
             stopTunnelProcess();
-            destroyPocketBase();
+            destroySites();
             stopForeground(true);
             stopSelf();
             return START_NOT_STICKY;
@@ -158,7 +165,7 @@ public class ServerService extends Service {
     public void onDestroy() {
         running.set(false);
         stopTunnelProcess();
-        destroyPocketBase();
+        destroySites();
         releaseWakeLock();
 
         tunnelState = "stopped";
@@ -170,10 +177,100 @@ public class ServerService extends Service {
     }
 
     /* ------------------------------------------------------------------ *
+     * Sites
+     * ------------------------------------------------------------------ */
+
+    /** One site's process and the two flags that shape its restart loop. */
+    private static final class SiteRuntime {
+        final SiteRegistry.Site site;
+        volatile Process process;
+        volatile boolean paused;
+        volatile boolean restartRequested;
+
+        SiteRuntime(SiteRegistry.Site site) {
+            this.site = site;
+        }
+    }
+
+    /**
+     * Reads filesDir/sites.json once. No file means one site on 8090 out of pb_data and
+     * pb_public, exactly as the build before this one ran — nothing is migrated.
+     */
+    private void loadSites() {
+        SiteRegistry registry = SiteRegistry.load(getFilesDir(), POCKETBASE_PORT);
+        for (String problem : registry.problems) {
+            Log.w(TAG, problem);
+            appendLog("pocketbase", "--- registry: " + problem + " ---");
+        }
+        for (SiteRegistry.Site site : registry.sites) {
+            sites.add(new SiteRuntime(site));
+            Log.i(TAG, "site " + site.id + " on :" + site.port + " — " + site.dataDir.getAbsolutePath());
+        }
+        publishSitesStatus();
+    }
+
+    /** The panel reads this list; the Windows supervisor writes the same shape. */
+    private void publishSitesStatus() {
+        JSONObject payload = new JSONObject();
+        JSONArray list = new JSONArray();
+        try {
+            payload.put("at", isoNow(System.currentTimeMillis()));
+            for (SiteRuntime runtime : sites) {
+                Process process = runtime.process;
+                JSONObject entry = new JSONObject();
+                entry.put("id", runtime.site.id);
+                entry.put("name", runtime.site.name);
+                entry.put("port", runtime.site.port);
+                entry.put("legacy", runtime.site.legacy);
+                entry.put("state", process != null && !runtime.paused
+                        ? "running"
+                        : serversDesired && !runtime.paused ? "starting" : "stopped");
+                entry.put("pid", processPid(process));
+                entry.put("pbData", runtime.site.dataDir.getAbsolutePath());
+                entry.put("publicDir", runtime.site.publicDir.getAbsolutePath());
+                list.put(entry);
+            }
+            payload.put("sites", list);
+        } catch (Exception error) {
+            Log.w(TAG, "could not publish the site list", error);
+            return;
+        }
+        writeJson(SiteRegistry.statusFile(getFilesDir()).getName(), payload);
+    }
+
+    /** Process.pid() is API 26; the panel only uses it for display. */
+    private static Object processPid(Process process) {
+        if (process == null) return JSONObject.NULL;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) return process.pid();
+        return JSONObject.NULL;
+    }
+
+    private SiteRuntime siteById(String siteId) {
+        String wanted = siteId == null ? "" : siteId.trim();
+        if (wanted.isEmpty()) {
+            for (SiteRuntime runtime : sites) {
+                if (runtime.site.legacy) return runtime;
+            }
+            return sites.isEmpty() ? null : sites.get(0);
+        }
+        for (SiteRuntime runtime : sites) {
+            if (runtime.site.id.equals(wanted)) return runtime;
+        }
+        return null;
+    }
+
+    private int primaryPort() {
+        SiteRuntime runtime = siteById("");
+        return runtime == null ? POCKETBASE_PORT : runtime.site.port;
+    }
+
+    /* ------------------------------------------------------------------ *
      * PocketBase
      * ------------------------------------------------------------------ */
 
-    private void supervisePocketBase() {
+    /** One thread per site: start it, log it, restart it, stop when told to. */
+    private void superviseSite(SiteRuntime runtime) {
+        SiteRegistry.Site site = runtime.site;
         int restarts = 0;
 
         while (running.get() && restarts <= MAX_RESTARTS) {
@@ -195,8 +292,8 @@ public class ServerService extends Service {
                 return;
             }
 
-            File dataDir = new File(getFilesDir(), "pb_data");
-            File publicDir = new File(getFilesDir(), "pb_public");
+            File dataDir = site.dataDir;
+            File publicDir = site.publicDir;
             if (!dataDir.exists() && !dataDir.mkdirs()) {
                 Log.e(TAG, "could not create " + dataDir.getAbsolutePath());
                 return;
@@ -207,41 +304,37 @@ public class ServerService extends Service {
             }
 
             try {
-                ProcessBuilder builder = new ProcessBuilder(
-                        binary.getAbsolutePath(),
-                        "serve",
-                        "--http=0.0.0.0:" + POCKETBASE_PORT,
-                        "--dir=" + dataDir.getAbsolutePath(),
-                        "--publicDir=" + publicDir.getAbsolutePath()
-                );
+                ProcessBuilder builder = new ProcessBuilder(site.serveArgs(binary.getAbsolutePath()));
                 builder.directory(getFilesDir());
                 builder.redirectErrorStream(true);
                 builder.environment().put("HOME", getFilesDir().getAbsolutePath());
                 builder.environment().put("TMPDIR", getCacheDir().getAbsolutePath());
 
-                pocketbase = builder.start();
-                Log.i(TAG, "PocketBase started");
-                appendLog("pocketbase", "--- started ---");
+                runtime.process = builder.start();
+                Log.i(TAG, "PocketBase started for " + site.id);
+                appendLog(site.logName, "--- started ---");
+                publishSitesStatus();
                 updateNotification(notificationText());
 
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(pocketbase.getInputStream()))) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(runtime.process.getInputStream()))) {
                     String line;
                     while ((line = reader.readLine()) != null) {
                         Log.i("PocketBase", line);
-                        appendLog("pocketbase", line);
-                        captureInstallerLink(line);
+                        appendLog(site.logName, line);
+                        captureInstallerLink(line, site);
                     }
                 }
 
-                int exit = pocketbase.waitFor();
-                pocketbase = null;
-                Log.w(TAG, "PocketBase exited with code " + exit);
+                int exit = runtime.process.waitFor();
+                runtime.process = null;
+                publishSitesStatus();
+                Log.w(TAG, "PocketBase for " + site.id + " exited with code " + exit);
 
                 if (!running.get()) break;
 
                 // A create-superuser or backup command needs the database to itself, and a
                 // switched-off server waits here until the dashboard turns it back on.
-                while ((pocketbasePaused || !serversDesired) && running.get()) {
+                while ((runtime.paused || !serversDesired) && running.get()) {
                     try {
                         Thread.sleep(200);
                     } catch (InterruptedException interrupted) {
@@ -251,10 +344,10 @@ public class ServerService extends Service {
                 }
                 if (!running.get()) break;
 
-                if (restartPocketbaseNow) {
-                    restartPocketbaseNow = false;
+                if (runtime.restartRequested) {
+                    runtime.restartRequested = false;
                     restarts = 0;
-                    appendLog("pocketbase", "--- restarted from the dashboard ---");
+                    appendLog(site.logName, "--- restarted from the dashboard ---");
                     continue;
                 }
 
@@ -266,7 +359,7 @@ public class ServerService extends Service {
                 break;
             } catch (Exception error) {
                 Log.e(TAG, "PocketBase failed to run", error);
-                appendLog("pocketbase", "failed: " + error.getMessage());
+                appendLog(site.logName, "failed: " + error.getMessage());
                 restarts++;
                 updateNotification("PocketBase failed: " + error.getMessage());
                 try {
@@ -279,8 +372,12 @@ public class ServerService extends Service {
         }
     }
 
-    private void destroyPocketBase() {
-        Process process = pocketbase;
+    private void destroySites() {
+        for (SiteRuntime runtime : sites) destroySite(runtime);
+    }
+
+    private void destroySite(SiteRuntime runtime) {
+        Process process = runtime.process;
         if (process == null) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             process.destroyForcibly();
@@ -316,16 +413,24 @@ public class ServerService extends Service {
                 JSONObject command = readCommand(serviceCommand);
                 if (command != null) {
                     String action = command.optString("action", "");
+                    // No siteId means the site that owns the original folders, so an
+                    // older dashboard keeps doing exactly what it did before.
+                    String siteId = command.optString("siteId", "");
                     if ("restart-pocketbase".equals(action)) {
-                        restartPocketbaseNow = true;
-                        destroyPocketBase();
-                        appendLog("pocketbase", "--- restart requested ---");
+                        SiteRuntime runtime = siteById(siteId);
+                        if (runtime == null) {
+                            Log.w(TAG, "restart ignored: there is no site called \"" + siteId + "\"");
+                        } else {
+                            runtime.restartRequested = true;
+                            destroySite(runtime);
+                            appendLog(runtime.site.logName, "--- restart requested ---");
+                        }
                     } else if ("restart-tunnel".equals(action)) {
                         startTunnel(lastTunnelPort, tunnelMode);
                     } else if ("create-superuser".equals(action)) {
-                        createSuperuser(command.optString("email", ""), command.optString("password", ""));
+                        createSuperuser(command.optString("email", ""), command.optString("password", ""), siteId);
                     } else if ("backup".equals(action)) {
-                        runBackup();
+                        runBackup(siteId);
                     } else if ("stop-servers".equals(action)) {
                         stopServers();
                     } else if ("start-servers".equals(action)) {
@@ -549,7 +654,7 @@ public class ServerService extends Service {
      * phone, which is why the dashboard only ever showed a login form. The token is
      * caught here and republished with hosts that work (loopback and the Wi-Fi address).
      */
-    private void captureInstallerLink(String line) {
+    private void captureInstallerLink(String line, SiteRegistry.Site site) {
         if (!line.contains("/_/#/pbinstall/")) return;
 
         Matcher matcher = INSTALLER_LINK.matcher(line);
@@ -563,24 +668,28 @@ public class ServerService extends Service {
             JSONObject payload = new JSONObject();
             payload.put("token", token);
             payload.put("path", suffix);
-            payload.put("url", "http://127.0.0.1:" + POCKETBASE_PORT + suffix);
-            payload.put("lanUrl", "http://" + lanIp() + ":" + POCKETBASE_PORT + suffix);
+            payload.put("siteId", site.id);
+            payload.put("port", site.port);
+            payload.put("url", "http://127.0.0.1:" + site.port + suffix);
+            payload.put("lanUrl", "http://" + lanIp() + ":" + site.port + suffix);
             payload.put("createdAt", isoNow(now));
             payload.put("expiresAt", isoNow(now + INSTALLER_TTL_MS));
             writeJson("installer.json", payload);
-            appendLog("pocketbase", "--- installer link captured (valid 30 minutes) ---");
+            appendLog(site.logName, "--- installer link captured (valid 30 minutes) ---");
         } catch (Exception error) {
             Log.w(TAG, "could not publish the installer link", error);
         }
     }
 
     /** Creates or resets a superuser through the PocketBase CLI, with the DB to itself. */
-    private void createSuperuser(String email, String password) {
+    private void createSuperuser(String email, String password, String siteId) {
         JSONObject result = new JSONObject();
+        SiteRuntime runtime = siteById(siteId);
         String address = email == null ? "" : email.trim();
         try {
             result.put("at", isoNow(System.currentTimeMillis()));
             result.put("email", address);
+            result.put("siteId", runtime == null ? siteId : runtime.site.id);
         } catch (Exception ignored) {
             // JSONObject.put only fails on invalid values, which these are not.
         }
@@ -594,11 +703,16 @@ public class ServerService extends Service {
             return;
         }
 
+        if (runtime == null) {
+            finishSuperuser(result, false, "There is no site called \"" + siteId + "\".");
+            return;
+        }
+
         File binary = new File(getApplicationInfo().nativeLibraryDir, "libpocketbase.so");
-        File dataDir = new File(getFilesDir(), "pb_data");
+        File dataDir = runtime.site.dataDir;
 
         try {
-            pausePocketbase();
+            pauseSite(runtime);
             ProcessBuilder builder = new ProcessBuilder(
                     binary.getAbsolutePath(),
                     "superuser", "upsert", address, password,
@@ -624,18 +738,18 @@ public class ServerService extends Service {
             if (exit == 0) {
                 // Once a real account exists the installer token has no purpose.
                 //noinspection ResultOfMethodCallIgnored
-                new File(getFilesDir(), "installer.json").delete();
-                appendLog("pocketbase", "--- superuser saved: " + address + " ---");
+                clearInstallerFor(runtime.site.id);
+                appendLog(runtime.site.logName, "--- superuser saved: " + address + " ---");
                 finishSuperuser(result, true, "Superuser saved. Sign in at /_/ with that email and password.");
             } else {
-                appendLog("pocketbase", "--- superuser command failed (exit " + exit + ") ---");
+                appendLog(runtime.site.logName, "--- superuser command failed (exit " + exit + ") ---");
                 finishSuperuser(result, false, text.isEmpty() ? "PocketBase rejected the account (exit " + exit + ")." : text);
             }
         } catch (Exception error) {
             Log.e(TAG, "create-superuser failed", error);
             finishSuperuser(result, false, "Could not run PocketBase: " + error.getMessage());
         } finally {
-            resumePocketbase();
+            resumeSite(runtime);
         }
     }
 
@@ -649,19 +763,37 @@ public class ServerService extends Service {
         writeJson("superuser-result.json", result);
     }
 
-    /** Zips pb_data into pb_public/backups so it can be downloaded from the phone itself. */
-    private void runBackup() {
-        File dataDir = new File(getFilesDir(), "pb_data");
-        File backupDir = new File(getFilesDir(), "pb_public/backups");
+    /** Zips one site's pb_data into its pb_public/backups, downloadable from the phone. */
+    private void runBackup(String siteId) {
+        SiteRuntime runtime = siteById(siteId);
+        if (runtime == null) {
+            JSONObject missing = new JSONObject();
+            try {
+                missing.put("ok", false);
+                missing.put("siteId", siteId);
+                missing.put("error", "There is no site called \"" + siteId + "\".");
+                missing.put("at", isoNow(System.currentTimeMillis()));
+            } catch (Exception ignored) {
+                // Plain string values only.
+            }
+            writeJson("backup.status.json", missing);
+            return;
+        }
+
+        SiteRegistry.Site site = runtime.site;
+        File dataDir = site.dataDir;
+        File backupDir = site.backupDir;
         String name = "pb-" + stamp() + ".zip";
         JSONObject status = new JSONObject();
 
         try {
+            status.put("siteId", site.id);
+            status.put("port", site.port);
             if (!backupDir.exists() && !backupDir.mkdirs()) {
                 throw new Exception("could not create " + backupDir.getAbsolutePath());
             }
 
-            pausePocketbase();
+            pauseSite(runtime);
 
             File part = new File(backupDir, name + ".part");
             long bytes;
@@ -677,7 +809,7 @@ public class ServerService extends Service {
             status.put("file", name);
             status.put("bytes", bytes);
             status.put("kept", kept);
-            appendLog("pocketbase", "--- backup written: " + name + " (" + (bytes / 1024) + " KiB) ---");
+            appendLog(site.logName, "--- backup written: " + name + " (" + (bytes / 1024) + " KiB) ---");
         } catch (Exception error) {
             Log.e(TAG, "backup failed", error);
             try {
@@ -686,9 +818,9 @@ public class ServerService extends Service {
             } catch (Exception ignored) {
                 // See above: plain string values only.
             }
-            appendLog("pocketbase", "--- backup failed: " + error.getMessage() + " ---");
+            appendLog(site.logName, "--- backup failed: " + error.getMessage() + " ---");
         } finally {
-            resumePocketbase();
+            resumeSite(runtime);
         }
 
         try {
@@ -744,12 +876,12 @@ public class ServerService extends Service {
         return kept;
     }
 
-    /** Stops PocketBase and waits until the process is really gone. */
-    private void pausePocketbase() {
-        pocketbasePaused = true;
-        destroyPocketBase();
+    /** Stops one site and waits until its process is gone; the other sites keep serving. */
+    private void pauseSite(SiteRuntime runtime) {
+        runtime.paused = true;
+        destroySite(runtime);
         long deadline = System.currentTimeMillis() + 8000;
-        while (pocketbase != null && System.currentTimeMillis() < deadline) {
+        while (runtime.process != null && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException interrupted) {
@@ -757,11 +889,13 @@ public class ServerService extends Service {
                 return;
             }
         }
+        publishSitesStatus();
     }
 
-    private void resumePocketbase() {
-        pocketbasePaused = false;
-        restartPocketbaseNow = true;
+    private void resumeSite(SiteRuntime runtime) {
+        runtime.paused = false;
+        runtime.restartRequested = true;
+        publishSitesStatus();
     }
 
     /* ------------------------------------------------------------------ *
@@ -771,9 +905,11 @@ public class ServerService extends Service {
     private void stopServers() {
         serversDesired = false;
         stopTunnel("Servers were turned off from the dashboard.");
-        destroyPocketBase();
+        destroySites();
         releaseWakeLock();
-        appendLog("pocketbase", "--- servers stopped from the dashboard ---");
+        for (SiteRuntime runtime : sites) {
+            appendLog(runtime.site.logName, "--- servers stopped from the dashboard ---");
+        }
         writePowerStatus();
         updateNotification(notificationText());
     }
@@ -781,9 +917,11 @@ public class ServerService extends Service {
     private void startServers() {
         serversDesired = true;
         acquireWakeLock();
-        // Unblocks the supervisor and makes it start PocketBase again.
-        restartPocketbaseNow = true;
-        appendLog("pocketbase", "--- servers started from the dashboard ---");
+        // Unblocks every site's supervisor and makes it start its PocketBase again.
+        for (SiteRuntime runtime : sites) runtime.restartRequested = true;
+        for (SiteRuntime runtime : sites) {
+            appendLog(runtime.site.logName, "--- servers started from the dashboard ---");
+        }
         writePowerStatus();
         updateNotification(notificationText());
     }
@@ -969,7 +1107,28 @@ public class ServerService extends Service {
         if ("running".equals(tunnelState)) {
             return "Named tunnel connected";
         }
-        return "PocketBase on :" + POCKETBASE_PORT + " · panel on :" + PANEL_PORT;
+        if (sites.size() > 1) {
+            StringBuilder ports = new StringBuilder();
+            for (SiteRuntime runtime : sites) {
+                if (ports.length() > 0) ports.append(", :");
+                ports.append(runtime.site.port);
+            }
+            return sites.size() + " sites on :" + ports + " · panel on :" + PANEL_PORT;
+        }
+        return "PocketBase on :" + primaryPort() + " · panel on :" + PANEL_PORT;
+    }
+
+    /** The installer link belongs to one site: clear it only when that site got its account. */
+    private void clearInstallerFor(String siteId) {
+        File file = new File(getFilesDir(), "installer.json");
+        try {
+            String owner = new JSONObject(readFile(file)).optString("siteId", "");
+            if (!owner.isEmpty() && !owner.equals(siteId)) return;
+        } catch (Exception ignored) {
+            // No link on disk, or an older one without a siteId: clearing it is safe.
+        }
+        //noinspection ResultOfMethodCallIgnored
+        file.delete();
     }
 
     private Notification buildNotification(String text) {

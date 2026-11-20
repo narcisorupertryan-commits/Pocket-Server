@@ -162,7 +162,10 @@ function loadSites(options) {
     }
 
     const requested = Number(entry.port);
-    const port = Number.isInteger(requested) && requested > 0 ? requested : nextFreePort(takenPorts, legacyPort);
+    // An entry that keeps the original folders keeps the usual port when none is given.
+    const port = Number.isInteger(requested) && requested > 0
+      ? requested
+      : legacy ? legacyPort : nextFreePort(takenPorts, legacyPort);
     if (!usablePort(port)) {
       problems.push(`site "${id}" has no usable port (${entry.port === undefined ? 'none given' : entry.port}) — skipped.`);
       continue;

@@ -106,7 +106,12 @@ Each site is its own PocketBase — its own database, admin login, files and bac
   next free port from 8091 is used.
 - A broken entry is logged and skipped — the remaining sites still start.
 - Adding or removing a site needs a launcher restart for now, and the dashboard still
-  shows the primary site. The Android build has no registry yet.
+  shows the primary site.
+- The phone build reads the same file from its private folder
+  (`/data/data/com.pocketserver.app/files/sites.json`), so you need `adb push` (or a
+  rooted device) to add a site there today. With no such file the phone runs one site
+  on 8090 out of the same `pb_data` and `pb_public` it has always used, so updating the
+  APK needs no migration.
 - Firewall: allow each site's port, e.g.
   `netsh advfirewall firewall add rule name="Pocket Server site 2" dir=in action=allow protocol=TCP localport=8091`.
 

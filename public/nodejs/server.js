@@ -88,8 +88,9 @@ const DATA_DIR = resolveDataDir();
 // writes here, so an upload is live at http://<phone>:8090/<name> immediately.
 const SITE_DIR = path.join(DATA_DIR, 'pb_public');
 
-/* data/sites.status.json is written by the Windows supervisor. The Android service
- * does not write it, so the phone build keeps one site and one PocketBase port. */
+/* data/sites.status.json is published by whoever owns the child processes: the Windows
+ * supervisor or the Android service. Without it (a plain desktop run) there is one
+ * site, on POCKETBASE_PORT. */
 function readSiteStatus() {
   try {
     const parsed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'sites.status.json'), 'utf8'));
