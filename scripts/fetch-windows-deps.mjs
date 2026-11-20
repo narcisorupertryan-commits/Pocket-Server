@@ -47,20 +47,47 @@ async function download(url, file) {
   return file;
 }
 
-/** Expands a .zip with whatever the host has: unzip, PowerShell, or Python. */
-function extract(zipFile, destination) {
+/** Finds a file by name under a folder, a few levels deep. */
+function findFile(dir, name, depth = 3) {
+  if (depth < 0 || !fs.existsSync(dir)) return null;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isFile() && entry.name.toLowerCase() === name.toLowerCase()) return path.join(dir, entry.name);
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findFile(path.join(dir, entry.name), name, depth - 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Expands a .zip with whichever tool works, and believes it only when `expected` is
+ * really on disk. `powershell` (5.1) exits 0 even when Expand-Archive gives up — it
+ * does on the deep corepack paths of a current Node zip — so its exit code alone is
+ * not evidence. `tar` (bsdtar, bundled with Windows and Linux) reads zips too.
+ */
+function extract(zipFile, destination, expected) {
   fs.mkdirSync(destination, { recursive: true });
+  const expand = `Expand-Archive -LiteralPath '${zipFile}' -DestinationPath '${destination}' -Force`;
   const attempts =
     process.platform === 'win32'
-      ? [['powershell', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${zipFile}' -DestinationPath '${destination}' -Force`]]]
+      ? [
+          ['pwsh', ['-NoProfile', '-NonInteractive', '-Command', expand]],
+          ['powershell', ['-NoProfile', '-Command', expand]],
+          ['tar', ['-xf', zipFile, '-C', destination]],
+        ]
       : [
           ['unzip', ['-o', zipFile, '-d', destination]],
+          ['tar', ['-xf', zipFile, '-C', destination]],
           ['python3', ['-m', 'zipfile', '-e', zipFile, destination]],
         ];
   for (const [command, commandArgs] of attempts) {
     const result = spawnSync(command, commandArgs, { stdio: 'ignore' });
-    if (result.status === 0) return true;
+    if (result.status === 0 && (!expected || findFile(destination, expected))) return true;
   }
+  if (expected && findFile(destination, expected)) return true;
   throw new Error(`could not unpack ${path.basename(zipFile)} — install unzip or python3, or unpack it by hand`);
 }
 
@@ -84,18 +111,24 @@ async function main() {
   const nodeZipUrl = `https://nodejs.org/dist/${nodeVersion}/node-${nodeVersion}-win-x64.zip`;
   const nodeZip = await download(nodeZipUrl, path.join(CACHE, `node-${nodeVersion}-win-x64.zip`));
   const unpacked = path.join(CACHE, `node-${nodeVersion}-win-x64`);
-  if (!fs.existsSync(unpacked)) extract(nodeZip, CACHE);
-  const nodeExe = path.join(unpacked, 'node.exe');
-  if (!fs.existsSync(nodeExe)) throw new Error('node.exe was not inside the archive');
+  let nodeExe = findFile(unpacked, 'node.exe', 2);
+  if (!nodeExe) {
+    extract(nodeZip, CACHE, 'node.exe');
+    nodeExe = findFile(unpacked, 'node.exe', 2) || findFile(CACHE, 'node.exe', 2);
+  }
+  if (!nodeExe) throw new Error('node.exe was not inside the archive');
   await fsp.copyFile(nodeExe, path.join(OUT, 'node.exe'));
   say(`node.exe ${nodeVersion}`);
 
   const pbZipUrl = `https://github.com/pocketbase/pocketbase/releases/download/v${POCKETBASE_VERSION}/pocketbase_${POCKETBASE_VERSION}_windows_amd64.zip`;
   const pbZip = await download(pbZipUrl, path.join(CACHE, `pocketbase_${POCKETBASE_VERSION}_windows_amd64.zip`));
   const pbDir = path.join(CACHE, `pocketbase-${POCKETBASE_VERSION}`);
-  if (!fs.existsSync(path.join(pbDir, 'pocketbase.exe'))) extract(pbZip, pbDir);
-  const pbExe = path.join(pbDir, 'pocketbase.exe');
-  if (!fs.existsSync(pbExe)) throw new Error('pocketbase.exe was not inside the archive');
+  let pbExe = findFile(pbDir, 'pocketbase.exe', 1);
+  if (!pbExe) {
+    extract(pbZip, pbDir, 'pocketbase.exe');
+    pbExe = findFile(pbDir, 'pocketbase.exe', 1);
+  }
+  if (!pbExe) throw new Error('pocketbase.exe was not inside the archive');
   await fsp.copyFile(pbExe, path.join(OUT, 'pocketbase.exe'));
   say(`pocketbase.exe ${POCKETBASE_VERSION}`);
   const license = path.join(ROOT, 'third-party', 'pocketbase', 'LICENSE.md');
