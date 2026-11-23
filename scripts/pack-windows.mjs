@@ -40,6 +40,7 @@ const COPY = [
 const PANEL_FILES = [
   'public/index.html',
   'public/app.js',
+  'public/qr.js',
   'public/app.css',
   'public/theme-init.js',
   'public/version.js',

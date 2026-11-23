@@ -52,7 +52,11 @@ function pathsFor(site, dataDir) {
     root,
     pbData: path.join(root, 'pb_data'),
     publicDir: path.join(root, 'pb_public'),
-    backups: path.join(root, 'pb_public', 'backups'),
+    // Outside pb_public: PocketBase serves that folder, so a zip in there was
+    // downloadable by anyone with the site address.
+    backups: path.join(dataDir, 'backups', site.id),
+    // Where 1.9.x and earlier wrote them. Kept listed by the dashboard, never written.
+    publicBackups: path.join(root, 'pb_public', 'backups'),
     // The original site keeps `pocketbase.log`, the name the dashboard's Logs tab reads.
     logName: site.legacy ? 'pocketbase' : `site-${site.id}`,
   };

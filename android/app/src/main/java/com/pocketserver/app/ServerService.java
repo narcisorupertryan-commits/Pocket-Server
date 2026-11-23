@@ -60,7 +60,7 @@ import java.util.regex.Pattern;
  * cloudflared child process. It cannot talk to Express directly, so the panel drives it
  * through files in filesDir:
  *
- *   tunnel.command.json   {action, mode, port}      panel -> service
+ *   tunnel.command.json   {action, mode, port, siteId}  panel -> service
  *   service.command.json  {action, siteId?}         panel -> service
  *   tunnel.status.json    {state, mode, url, ...}   service -> panel
  *   logs/pocketbase.log, logs/cloudflared.log       service -> panel (diagnostics)
@@ -97,6 +97,8 @@ public class ServerService extends Service {
     private volatile String tunnelMode = "quick";
     private volatile String tunnelUrl = null;
     private volatile String tunnelMessage = "";
+    /** Which site the address publishes; empty means the panel itself. */
+    private volatile String tunnelSiteId = "";
     /** Dashboard master switch: false stops PocketBase and the tunnel but keeps the panel. */
     private volatile boolean serversDesired = true;
     private volatile boolean tunnelStopping = false;
@@ -408,8 +410,9 @@ public class ServerService extends Service {
                     String action = command.optString("action", "");
                     int port = command.optInt("port", PANEL_PORT);
                     String mode = command.optString("mode", "quick");
+                    String siteId = command.optString("siteId", "");
                     if ("start".equals(action)) {
-                        startTunnel(port, mode);
+                        startTunnel(port, mode, siteId);
                     } else if ("stop".equals(action)) {
                         stopTunnel("Stopped from the dashboard.");
                     }
@@ -433,7 +436,7 @@ public class ServerService extends Service {
                             appendLog(runtime.site.logName, "--- restart requested ---");
                         }
                     } else if ("restart-tunnel".equals(action)) {
-                        startTunnel(lastTunnelPort, tunnelMode);
+                        startTunnel(lastTunnelPort, tunnelMode, tunnelSiteId);
                     } else if ("create-superuser".equals(action)) {
                         createSuperuser(command.optString("email", ""), command.optString("password", ""), siteId);
                     } else if ("backup".equals(action)) {
@@ -472,11 +475,12 @@ public class ServerService extends Service {
      * cloudflared tunnel
      * ------------------------------------------------------------------ */
 
-    private synchronized void startTunnel(int port, String mode) {
+    private synchronized void startTunnel(int port, String mode, String siteId) {
         stopTunnelProcess();
 
         lastTunnelPort = port;
         tunnelMode = "named".equals(mode) ? "named" : "quick";
+        tunnelSiteId = siteId == null ? "" : siteId;
         tunnelAttempt = 0;
         launchTunnel();
     }
@@ -547,6 +551,7 @@ public class ServerService extends Service {
                     ? "Connecting the named tunnel…"
                     : "Waiting for Cloudflare to assign an address…";
             appendLog("cloudflared", "--- started (" + tunnelMode + ", port " + lastTunnelPort
+                    + (tunnelSiteId.isEmpty() ? "" : ", site " + tunnelSiteId)
                     + ", resolver " + (tunnelAttempt == 0 ? "system" : "1.1.1.1") + ") ---");
             writeTunnelStatus();
             updateNotification(notificationText());
@@ -770,7 +775,7 @@ public class ServerService extends Service {
         writeJson("superuser-result.json", result);
     }
 
-    /** Zips one site's pb_data into its pb_public/backups, downloadable from the phone. */
+    /** Zips one site's pb_data into its private backups folder, out of the web root. */
     private void runBackup(String siteId) {
         SiteRuntime runtime = siteById(siteId);
         if (runtime == null) {
@@ -1013,6 +1018,8 @@ public class ServerService extends Service {
             status.put("state", tunnelState);
             status.put("mode", tunnelMode);
             status.put("url", tunnelUrl == null ? JSONObject.NULL : tunnelUrl);
+            status.put("port", lastTunnelPort);
+            status.put("siteId", tunnelSiteId);
             status.put("message", tunnelMessage);
             status.put("updatedAt", System.currentTimeMillis());
 

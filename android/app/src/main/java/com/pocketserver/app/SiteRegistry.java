@@ -215,7 +215,10 @@ public final class SiteRegistry {
         File dataDir = new File(root, "pb_data");
         File publicDir = new File(root, "pb_public");
         String logName = legacy ? "pocketbase" : "site-" + id;
-        return new Site(id, name, port, legacy, dataDir, publicDir, new File(publicDir, "backups"), logName);
+        // Zips live outside pb_public: PocketBase serves that folder, so a backup in
+        // there was downloadable by anyone with the site address.
+        File backupDir = new File(new File(dataRoot, "backups"), id);
+        return new Site(id, name, port, legacy, dataDir, publicDir, backupDir, logName);
     }
 
     private static boolean wantsLegacy(JSONObject entry) {

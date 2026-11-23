@@ -308,7 +308,7 @@ let extrasAt = 0;
 async function refreshExtras(force) {
   if (!force && Date.now() - extrasAt < 20000) return;
   extrasAt = Date.now();
-  await Promise.all([loadSuperuser(), loadBackup(), loadPower()]);
+  await Promise.all([loadSuperuser(), loadBackup(), loadPower(), loadDomains()]);
 }
 
 /* ------------------------------------------------------------------ *
@@ -548,31 +548,66 @@ async function loadBackup() {
 
   const status = data.status;
   if (status && status.ok) {
-    $('backup-state').textContent = `Last backup ${formatDate(status.at)} · ${formatBytes(status.bytes || 0)} · the newest 7 are kept.`;
+    $('backup-state').textContent = `Last backup ${formatDate(status.at)} · ${formatBytes(status.bytes || 0)} · the newest 7 are kept outside the website.`;
   } else if (status && status.error) {
     $('backup-state').textContent = `The last backup failed: ${status.error}`;
   } else {
     $('backup-state').textContent = 'No backup yet. One runs nightly at 03:00, or start one now.';
   }
 
+  const files = data.files || [];
+  const shown = files.slice(0, 5);
+  // The zips older builds wrote into the published folder stay visible even when they
+  // are older than the newest five, because they are the ones that need attention.
+  for (const file of files) {
+    if (shown.length >= 10) break;
+    if (file.public && !shown.includes(file)) shown.push(file);
+  }
+
   const list = $('backup-list');
   list.replaceChildren();
-  for (const file of (data.files || []).slice(0, 5)) {
+  for (const file of shown) {
     const row = document.createElement('li');
     row.className = 'flex items-center justify-between gap-2 text-[11px] text-slate-400';
 
-    const link = document.createElement('a');
-    link.href = `http://${reachableHost(state.status)}:${sitePort(state.status)}/backups/${encodeURIComponent(file.name)}`;
-    link.target = '_blank';
-    link.rel = 'noreferrer';
+    // A private zip is fetched with the panel token; an old public one is still a plain
+    // link to PocketBase, exactly as before.
+    const link = document.createElement(file.public ? 'a' : 'button');
+    if (file.public) {
+      link.href = `http://${reachableHost(state.status)}:${sitePort(state.status)}/backups/${encodeURIComponent(file.name)}`;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+    } else {
+      link.type = 'button';
+      link.addEventListener('click', () => downloadBackup(file.name));
+    }
     link.className = 'truncate font-mono text-sky-300 hover:underline';
     link.textContent = file.name;
 
+    const right = document.createElement('span');
+    right.className = 'flex shrink-0 items-center gap-1.5';
+    if (file.public) {
+      const tag = document.createElement('span');
+      tag.className = 'rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300 ring-1 ring-amber-500/30';
+      tag.textContent = 'public';
+      tag.title = 'Inside the published website folder: anyone with the site address can download this zip.';
+      right.append(tag);
+    }
     const size = document.createElement('span');
     size.textContent = formatBytes(file.bytes || 0);
+    right.append(size);
 
-    row.append(link, size);
+    row.append(link, right);
     list.append(row);
+  }
+
+  const warning = $('backup-warning');
+  if (warning) {
+    const exposed = Number(data.publicCount || 0);
+    warning.classList.toggle('hidden', exposed === 0);
+    if (exposed > 0) {
+      warning.textContent = `${exposed} older backup${exposed === 1 ? ' sits' : 's sit'} in the published website folder, so anyone with the site address can download ${exposed === 1 ? 'it' : 'them'}. New backups are kept outside the website; copy what you need from the Files tab and delete ${exposed === 1 ? 'that zip' : 'those zips'} when you are done.`;
+    }
   }
 }
 
@@ -671,7 +706,7 @@ function renderStatus(status) {
   $('runtime-platform').textContent = `${status.platform || 'unknown'} · ${status.arch || 'unknown'}`;
   $('runtime-port').textContent = `0.0.0.0:${panelPort(status)}`;
   if ($('tunnel-target-panel')) {
-    $('tunnel-target-panel').textContent = `Control panel (${panelPort(status)})`;
+    updateTunnelTargetUi();
   }
   if ($('runtime-ui')) {
     $('runtime-ui').textContent = UI_VERSION === '__POCKET_UI_VERSION__' ? 'dev copy' : UI_VERSION;
@@ -796,8 +831,9 @@ async function refreshFiles() {
 }
 
 async function refreshTunnel() {
-  const data = await api('/api/tunnel');
-  renderTunnel(data.status || { state: 'stopped' }, data.available !== false, Boolean(data.named && data.named.configured));
+  // ?site= tells a multi-site panel which site's PocketBase the tunnel should reach.
+  const data = await api(withSite('/api/tunnel'));
+  renderTunnel(data);
 }
 
 async function refreshLogs() {
@@ -853,14 +889,162 @@ async function saveTunnelToken() {
   }
 }
 
-function renderTunnel(status, available, namedConfigured) {
+/** The "Hosted site" choice names the site on screen, with the port it would publish. */
+function updateTunnelTargetUi(targets) {
+  const status = state.status;
+  const active = selectedSite(status);
+  const panel = targets && Number(targets.panel) ? Number(targets.panel) : panelPort(status);
+  const port = targets && Number(targets.site) ? Number(targets.site) : sitePort(status);
+
+  if ($('tunnel-target-panel')) $('tunnel-target-panel').textContent = `Control panel (${panel})`;
+  if ($('tunnel-target-site')) {
+    $('tunnel-target-site').textContent = active
+      ? `${active.name || active.id} (${port})`
+      : `Hosted site (${port})`;
+  }
+}
+
+/**
+ * Own addresses: one hostname per site, kept in settings.json. The Cloudflare dashboard
+ * owns the actual route; this card shows the mapping and can prove it.
+ */
+let domainEntries = [];
+
+async function loadDomains() {
+  if (!$('tunnel-domain-input')) return;
+  try {
+    const data = await api('/api/domains');
+    domainEntries = data.sites || [];
+  } catch (error) {
+    return;
+  }
+  renderDomainUi();
+}
+
+function currentDomain() {
+  const id = state.siteId || 'default';
+  return domainEntries.find((site) => site.id === id) || null;
+}
+
+function renderDomainUi() {
+  const input = $('tunnel-domain-input');
+  if (!input) return;
+
+  const entry = currentDomain();
+  const hostname = entry ? entry.hostname : '';
+  // Do not overwrite what the user is typing (the card refreshes every few seconds).
+  if (document.activeElement !== input) input.value = hostname;
+
+  const label = $('tunnel-domain-site');
+  if (label) label.textContent = entry ? entry.name || entry.id : 'this site';
+
+  const open = $('tunnel-domain-open');
+  if (open) {
+    open.classList.toggle('hidden', !hostname);
+    open.href = hostname ? `https://${hostname}/` : '#';
+    open.textContent = hostname ? `Open ${hostname}` : 'Open';
+  }
+
+  const note = $('tunnel-domain-note');
+  if (note) {
+    note.textContent = hostname
+      ? `Point ${hostname} at this site's port (${sitePort(state.status)}) in the Cloudflare tunnel's public hostnames, then Check it from here.`
+      : 'Optional: give this site a stable address on your own domain. Needs a named tunnel — the route itself is set in the Cloudflare dashboard.';
+  }
+}
+
+async function saveDomain() {
+  const input = $('tunnel-domain-input');
+  const hostname = input.value.trim();
+  try {
+    const data = await api(withSite('/api/domains'), {
+      method: 'POST',
+      body: JSON.stringify({ hostname }),
+    });
+    domainEntries = data.sites || [];
+    renderDomainUi();
+    $('tunnel-domain-status').textContent = '';
+    toast(hostname ? `Saved ${hostname}` : 'Address cleared', 'success');
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+async function checkDomain() {
+  const button = $('tunnel-domain-check');
+  const status = $('tunnel-domain-status');
+  button.disabled = true;
+  status.className = 'mt-1 text-[11px] text-slate-500';
+  status.textContent = 'Asking the address…';
+
+  try {
+    const data = await api(withSite('/api/domains/check'), { method: 'POST' });
+    if (data.ok) {
+      status.textContent = `${data.hostname} answers from this site.`;
+      status.className = 'mt-1 text-[11px] text-emerald-300';
+    } else if (data.kind === 'panel') {
+      status.textContent = `${data.hostname} reaches the control panel, not this site — point it at ${sitePort(state.status)}.`;
+      status.className = 'mt-1 text-[11px] text-amber-300';
+    } else {
+      status.textContent = `${data.hostname} did not answer (${data.error || `HTTP ${data.status}`}). Is the named tunnel running?`;
+      status.className = 'mt-1 text-[11px] text-rose-300';
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    status.className = 'mt-1 text-[11px] text-rose-300';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** Draws (or clears) the scannable copy of the public address. */
+function renderTunnelQr(url) {
+  const row = $('tunnel-qr-row');
+  const box = $('tunnel-qr');
+  if (!row || !box) return;
+
+  if (!url) {
+    row.classList.add('hidden');
+    row.classList.remove('flex');
+    box.replaceChildren();
+    delete box.dataset.url;
+    return;
+  }
+
+  if (box.dataset.url !== url) {
+    try {
+      box.innerHTML = window.qrCode ? window.qrCode.svg(url) : '';
+      box.dataset.url = window.qrCode ? url : '';
+    } catch (error) {
+      // Too long for the encoder, or qr.js did not load: the link above still works.
+      box.replaceChildren();
+      box.dataset.url = '';
+    }
+  }
+
+  const ready = box.dataset.url === url;
+  row.classList.toggle('hidden', !ready);
+  row.classList.toggle('flex', ready);
+}
+
+function renderTunnel(data) {
+  const status = (data && data.status) || { state: 'stopped' };
+  const available = !data || data.available !== false;
+  const namedConfigured = Boolean(data && data.named && data.named.configured);
   const current = status.state || 'stopped';
   state.tunnel = current;
+
+  updateTunnelTargetUi(data && data.targets);
 
   // While a tunnel is up, mirror what is actually running into the pickers.
   if (current === 'running' || current === 'starting') {
     $('tunnel-mode').value = status.mode === 'named' ? 'named' : 'quick';
     updateTunnelModeUi();
+    // The running tunnel may have been started for another site than the one on screen.
+    const runningPort = Number(status.port) || 0;
+    if (runningPort) {
+      $('tunnel-target').value = runningPort === panelPort(state.status) ? 'panel' : 'site';
+    }
   }
 
   if ($('tunnel-mode').value === 'named') {
@@ -896,6 +1080,7 @@ function renderTunnel(status, available, namedConfigured) {
     row.classList.add('hidden');
     row.classList.remove('flex');
   }
+  renderTunnelQr(current === 'running' && status.url ? status.url : '');
 
   const message = $('tunnel-message');
   if (current === 'error') {
@@ -916,6 +1101,14 @@ function renderTunnel(status, available, namedConfigured) {
     message.textContent = 'The tunnel is unavailable in this build — it needs a build that bundles cloudflared.';
     message.className = 'mt-2 text-xs text-slate-500';
   }
+
+  // The address keeps serving while the dashboard shows a different site.
+  const activeSite = selectedSite(state.status);
+  const served = siteList(state.status).find((site) => site.id === status.siteId);
+  if ((current === 'running' || current === 'starting') && served && activeSite && served.id !== activeSite.id) {
+    message.textContent = `This address serves ${served.name || served.id}. Switch to that site to manage it.`;
+    message.className = 'mt-2 text-xs text-amber-300';
+  }
 }
 
 async function toggleTunnel() {
@@ -926,7 +1119,13 @@ async function toggleTunnel() {
   try {
     await api('/api/tunnel', {
       method: 'POST',
-      body: JSON.stringify({ action, target: $('tunnel-target').value, mode: $('tunnel-mode').value }),
+      body: JSON.stringify({
+        action,
+        target: $('tunnel-target').value,
+        mode: $('tunnel-mode').value,
+        // The site id is what makes a tunnel reach this site instead of the primary one.
+        siteId: state.siteId,
+      }),
     });
     $('tunnel-badge').textContent = action === 'start' ? 'starting' : 'stopping';
     setTimeout(() => refreshTunnel().catch(() => {}), 1500);
@@ -937,8 +1136,17 @@ async function toggleTunnel() {
 }
 
 async function downloadFile(name) {
+  return downloadWithToken(withSite(`/api/files/${encodeURIComponent(name)}/download`), name);
+}
+
+async function downloadBackup(name) {
+  return downloadWithToken(withSite(`/api/backup/${encodeURIComponent(name)}/download`), name);
+}
+
+/** Fetches a protected file with the panel token and saves it through a blob. */
+async function downloadWithToken(path, name) {
   try {
-    const response = await fetch(`${state.apiBase}${withSite(`/api/files/${encodeURIComponent(name)}/download`)}`, {
+    const response = await fetch(`${state.apiBase}${path}`, {
       headers: state.token ? { 'X-Pocket-Token': state.token } : {},
     });
     if (response.status === 401) {
@@ -1106,6 +1314,16 @@ function wireEvents() {
 
   $('tunnel-mode').addEventListener('change', updateTunnelModeUi);
   $('tunnel-token-save').addEventListener('click', saveTunnelToken);
+  if ($('tunnel-domain-save')) {
+    $('tunnel-domain-save').addEventListener('click', saveDomain);
+    $('tunnel-domain-check').addEventListener('click', checkDomain);
+    $('tunnel-domain-input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveDomain();
+      }
+    });
+  }
 
   for (const name of ['pocketbase', 'cloudflared']) {
     $(`log-src-${name}`).addEventListener('click', () => {

@@ -30,7 +30,8 @@ const PANEL_PORT = Number(process.env.PORT) || 8080;
 
 const PB_DATA = path.join(DATA_DIR, 'pb_data');
 const SITE_DIR = path.join(DATA_DIR, 'pb_public');
-const BACKUP_DIR = path.join(SITE_DIR, 'backups');
+// Private: never inside pb_public, which PocketBase serves to the public.
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 
 const FILES = {
@@ -202,6 +203,8 @@ class Supervisor {
     this.tunnelMessage = 'The tunnel is stopped.';
     this.tunnelMode = 'quick';
     this.tunnelPort = PANEL_PORT;
+    // The site whose PocketBase the tunnel publishes; empty means the panel itself.
+    this.tunnelSiteId = '';
     this.runtimeFile = path.join(DATA_DIR, 'runtime.json');
     this.timers = [];
   }
@@ -519,10 +522,11 @@ class Supervisor {
 
   /* ---------------- cloudflared ---------------- */
 
-  startTunnel(port, mode) {
+  startTunnel(port, mode, siteId) {
     this.stopTunnelProcess();
     this.tunnelPort = Number(port) || PANEL_PORT;
     this.tunnelMode = mode === 'named' ? 'named' : 'quick';
+    this.tunnelSiteId = typeof siteId === 'string' ? siteId : '';
     this.launchTunnel();
   }
 
@@ -573,7 +577,8 @@ class Supervisor {
       this.tunnelMode === 'named'
         ? 'Connecting the named tunnel…'
         : 'Waiting for Cloudflare to assign an address…';
-    appendLog('cloudflared', `--- started (${this.tunnelMode}, port ${this.tunnelPort}) ---`);
+    const siteNote = this.tunnelSiteId ? `, site ${this.tunnelSiteId}` : '';
+    appendLog('cloudflared', `--- started (${this.tunnelMode}, port ${this.tunnelPort}${siteNote}) ---`);
     this.writeTunnelStatus();
 
     const onLine = (line) => {
@@ -638,6 +643,10 @@ class Supervisor {
       state: this.tunnelState,
       mode: this.tunnelMode,
       url: this.tunnelUrl,
+      // Which site the address serves, and the port it reaches. Empty siteId means the
+      // panel is what is published.
+      port: this.tunnelPort,
+      siteId: this.tunnelSiteId,
       message: this.tunnelMessage,
       updatedAt: Date.now(),
     });
@@ -651,7 +660,7 @@ class Supervisor {
     const tunnel = this.takeCommand(FILES.tunnelCommand);
     if (tunnel) {
       const action = typeof tunnel.action === 'string' ? tunnel.action : '';
-      if (action === 'start') this.startTunnel(tunnel.port, tunnel.mode);
+      if (action === 'start') this.startTunnel(tunnel.port, tunnel.mode, tunnel.siteId);
       else if (action === 'stop') this.stopTunnel('Stopped from the dashboard.');
       return;
     }
@@ -672,7 +681,7 @@ class Supervisor {
       return;
     }
     if (action === 'restart-tunnel') {
-      this.startTunnel(this.tunnelPort, this.tunnelMode);
+      this.startTunnel(this.tunnelPort, this.tunnelMode, this.tunnelSiteId);
       return;
     }
     if (action === 'stop-servers') {

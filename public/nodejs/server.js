@@ -178,7 +178,10 @@ const LOG_DIR = path.join(DATA_DIR, 'logs');
 const INSTALLER_FILE = path.join(DATA_DIR, 'installer.json');
 const SUPERUSER_RESULT_FILE = path.join(DATA_DIR, 'superuser-result.json');
 const BACKUP_STATUS_FILE = path.join(DATA_DIR, 'backup.status.json');
-const BACKUP_DIR = path.join(SITE_DIR, 'backups');
+// Zips live outside every web root. Until 1.9.x they were written into
+// pb_public/backups, which PocketBase serves: anyone with the site address could
+// download the whole database. Old zips there are still listed, and flagged.
+const BACKUP_ROOT = path.join(DATA_DIR, 'backups');
 const POWER_STATUS_FILE = path.join(DATA_DIR, 'power.status.json');
 const INTEGRITY_FILE = path.join(DATA_DIR, 'integrity.json');
 
@@ -592,8 +595,14 @@ app.post('/api/pin', (req, res) => {
   res.json({ token: issueToken() });
 });
 
-// Built per request: the panel port is only known once the listener is up.
-const tunnelTargets = () => ({ panel: activePort, site: POCKETBASE_PORT });
+/** The port a tunnel must reach: the selected site's PocketBase, else the legacy one. */
+function tunnelPortFor(site) {
+  return site && Number.isInteger(site.port) ? site.port : POCKETBASE_PORT;
+}
+
+// Built per request: the panel port is only known once the listener is up, and the site
+// port depends on which site the dashboard is showing.
+const tunnelTargets = (site) => ({ panel: activePort, site: tunnelPortFor(site) });
 
 function hasNamedTunnelToken() {
   return typeof settings.tunnelToken === 'string' && settings.tunnelToken.length >= 20;
@@ -618,11 +627,14 @@ function writeServiceCommand(command) {
 
 app.get('/api/tunnel', (req, res) => {
   const status = readJsonFile(TUNNEL_STATUS_FILE);
+  const site = requestSite(req);
   // The tunnel can only be spawned by the Android service, so a browser on the PC
   // can see the state but should not offer to start it.
   res.json({
     status: status || { state: 'stopped' },
-    targets: tunnelTargets(),
+    targets: tunnelTargets(site),
+    // Names the site behind the "Hosted site" choice so the card can label it.
+    site: { id: site ? site.id : '', name: site ? site.name || site.id : '', port: tunnelPortFor(site) },
     available: SUPERVISED,
     // The token itself never leaves the device: only whether one is stored.
     named: { configured: hasNamedTunnelToken() },
@@ -639,6 +651,15 @@ app.post('/api/tunnel', (req, res) => {
 
   const target = req.body?.target === 'site' ? 'site' : 'panel';
   const mode = req.body?.mode === 'named' ? 'named' : 'quick';
+  // Which site the tunnel publishes. Without an id the selected site's PocketBase is
+  // used (the primary one on a single-site install, exactly as before).
+  const requestedSite = typeof req.body?.siteId === 'string' ? req.body.siteId.trim() : '';
+  const site = requestedSite ? siteById(requestedSite) : requestSite(req);
+
+  if (requestedSite && !site) {
+    res.status(400).json({ error: `There is no site called "${requestedSite}".` });
+    return;
+  }
 
   if (mode === 'named' && !hasNamedTunnelToken()) {
     res.status(400).json({ error: 'Add and save a Cloudflare tunnel token first.' });
@@ -650,7 +671,10 @@ app.post('/api/tunnel', (req, res) => {
     action,
     target,
     mode,
-    port: tunnelTargets()[target],
+    port: target === 'panel' ? activePort : tunnelPortFor(site),
+    // The service echoes this into tunnel.status.json, so the card can say which site
+    // the public address serves even after the dashboard switches site.
+    siteId: target === 'panel' ? '' : site ? site.id : '',
     at: new Date().toISOString(),
   };
 
@@ -745,6 +769,104 @@ app.post('/api/service', (req, res) => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Own addresses
+ * ------------------------------------------------------------------ */
+
+/* settings.json keeps { "domains": { "<site id>": "shop.example.com" } }. This device
+ * does not create the DNS route: a named Cloudflare tunnel's public hostnames point at
+ * each site's port in the Cloudflare dashboard. The mapping is kept here so the tunnel
+ * card can show it, open it and prove which server the address really reaches. */
+const HOSTNAME_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+/** A bare lowercase hostname, "" to clear it, or null when it is not one. */
+function cleanHostname(input) {
+  if (typeof input !== 'string') return null;
+  const text = input
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '')
+    .replace(/\.$/, '');
+  if (!text) return '';
+  return HOSTNAME_PATTERN.test(text) ? text : null;
+}
+
+/** Every site this panel knows, with the address settings.json holds for it. */
+function domainList() {
+  const stored = settings.domains && typeof settings.domains === 'object' ? settings.domains : {};
+  const sites =
+    SITES.length > 0 ? SITES : [{ id: 'default', name: 'This site', port: POCKETBASE_PORT, legacy: true }];
+  return sites.map((site) => {
+    const id = site.id || 'default';
+    const hostname = typeof stored[id] === 'string' ? stored[id] : '';
+    return { id, name: site.name || id, port: site.port, hostname, url: hostname ? `https://${hostname}` : '' };
+  });
+}
+
+app.get('/api/domains', (req, res) => {
+  const site = requestSite(req);
+  res.json({
+    sites: domainList(),
+    siteId: (site && site.id) || 'default',
+    namedTunnel: hasNamedTunnelToken(),
+  });
+});
+
+app.post('/api/domains', (req, res) => {
+  const site = requestSite(req);
+  const id = (site && site.id) || 'default';
+  const hostname = cleanHostname(req.body?.hostname);
+
+  if (hostname === null) {
+    res.status(400).json({ error: 'Use a hostname like shop.example.com — no https:// and no path.' });
+    return;
+  }
+
+  const stored = { ...(settings.domains && typeof settings.domains === 'object' ? settings.domains : {}) };
+  if (!hostname) {
+    delete stored[id];
+  } else {
+    const takenBy = Object.keys(stored).find((key) => key !== id && stored[key] === hostname);
+    if (takenBy) {
+      res.status(409).json({ error: `That address is already set for ${takenBy}.` });
+      return;
+    }
+    stored[id] = hostname;
+  }
+
+  settings = { ...settings, domains: stored };
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+  } catch (error) {
+    res.status(500).json({ error: 'Could not save the address on this device.' });
+    return;
+  }
+
+  res.json({ sites: domainList(), siteId: id });
+});
+
+/** Asks the saved address who answers there: this site's PocketBase, the panel, or nobody. */
+app.post('/api/domains/check', async (req, res) => {
+  const entry = domainList().find((item) => item.id === ((requestSite(req) || {}).id || 'default'));
+  if (!entry || !entry.hostname) {
+    res.status(400).json({ error: 'Save an address for this site first.' });
+    return;
+  }
+
+  try {
+    const response = await fetch(`https://${entry.hostname}/api/health`, {
+      signal: AbortSignal.timeout(6000),
+    });
+    const body = await response.json().catch(() => null);
+    // PocketBase answers { code: 200 }, the panel { ok: true }: which one matters.
+    const kind = body && body.code === 200 ? 'site' : body && body.ok === true ? 'panel' : 'unknown';
+    res.json({ hostname: entry.hostname, status: response.status, kind, ok: kind === 'site' });
+  } catch (error) {
+    res.json({ hostname: entry.hostname, status: 0, kind: 'unreachable', ok: false, error: error.message });
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * PocketBase superuser
  * ------------------------------------------------------------------ */
 
@@ -827,17 +949,22 @@ app.post('/api/superuser', (req, res) => {
  * Backups
  * ------------------------------------------------------------------ */
 
-async function listBackups(publicDir = SITE_DIR) {
-  const backupDir = path.join(publicDir, 'backups');
+/** data/backups/<site id> — the supervisor and the phone service write here too. */
+function backupDirFor(site) {
+  return path.join(BACKUP_ROOT, (site && site.id) || 'default');
+}
+
+/** One folder's zips; `public` marks the ones PocketBase serves over HTTP. */
+async function listBackups(dir, isPublic) {
   try {
-    const entries = await fsp.readdir(backupDir, { withFileTypes: true });
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
     const files = [];
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.zip')) continue;
-      const info = await fsp.stat(path.join(backupDir, entry.name));
-      files.push({ name: entry.name, bytes: info.size, modified: info.mtime.toISOString() });
+      const info = await fsp.stat(path.join(dir, entry.name));
+      files.push({ name: entry.name, bytes: info.size, modified: info.mtime.toISOString(), public: isPublic === true });
     }
-    files.sort((a, b) => (a.modified < b.modified ? 1 : -1));
+    files.sort((a, b) => (a.modified < b.modified ? 1 : a.modified > b.modified ? -1 : 0));
     return files;
   } catch (error) {
     return [];
@@ -975,12 +1102,44 @@ app.get('/api/integrity', async (req, res) => {
 
 app.get('/api/backup', async (req, res) => {
   const site = requestSite(req);
+  const privateDir = backupDirFor(site);
+  const exposedDir = path.join(requestSiteDir(req), 'backups');
+  const files = [
+    ...(await listBackups(privateDir, false)),
+    ...(await listBackups(exposedDir, true)),
+  ].sort((a, b) => (a.modified < b.modified ? 1 : a.modified > b.modified ? -1 : 0));
+  const publicCount = files.filter((file) => file.public).length;
   res.json({
     status: readJsonFile(BACKUP_STATUS_FILE),
-    files: await listBackups(requestSiteDir(req)),
+    files,
     siteId: site ? site.id : '',
+    directory: privateDir,
+    publicDirectory: publicCount > 0 ? exposedDir : '',
+    publicCount,
     enabled: settings.backupEnabled !== false,
   });
+});
+
+// A private zip is not reachable through PocketBase, so the panel hands it out with
+// the session token. The old public zips answer here too, for one place to download.
+app.get('/api/backup/:name/download', (req, res) => {
+  const name = safeName(req.params.name);
+  if (!name || !name.endsWith('.zip')) {
+    res.status(400).json({ error: 'Invalid backup name.' });
+    return;
+  }
+
+  const site = requestSite(req);
+  const target = [
+    path.join(backupDirFor(site), name),
+    path.join(requestSiteDir(req), 'backups', name),
+  ].find((file) => fs.existsSync(file));
+
+  if (!target) {
+    res.status(404).json({ error: 'Backup not found.' });
+    return;
+  }
+  res.download(target, name);
 });
 
 app.post('/api/backup', (req, res) => {

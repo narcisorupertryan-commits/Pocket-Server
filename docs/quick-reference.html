@@ -306,11 +306,11 @@
       <h2>Public tunnel (full edition)</h2>
       <ol>
         <li>Dashboard → <strong>Public tunnel</strong> → choose <strong>Quick</strong> or <strong>Named</strong>.</li>
-        <li><strong>Quick</strong>: pick <em>Control panel (8080)</em> or <em>Hosted site (8090)</em> → <strong>Start</strong>. Gives a new <code>https://….trycloudflare.com</code> each time.</li>
+        <li><strong>Quick</strong>: pick <em>Control panel (8080)</em> or <em>Hosted site</em> (the site the picker shows, on its own port) → <strong>Start</strong>. Gives a new <code>https://….trycloudflare.com</code> each time, plus a QR code to scan.</li>
         <li><strong>Named</strong>: Cloudflare → Zero Trust → Networks → Tunnels → Create → copy token → paste → <strong>Save</strong> → <strong>Start</strong>. Stable hostname, token stays on the phone.</li>
         <li>Notification shows the live URL. <strong>Stop</strong> it when you are done.</li>
       </ol>
-      <p style="margin:1.4mm 0 0"><span class="mono">cloudflared tunnel --url http://127.0.0.1:8090</span> is what Quick mode runs.</p>
+      <p style="margin:1.4mm 0 0"><span class="mono">cloudflared tunnel --url http://127.0.0.1:&lt;port&gt;</span> is what Quick mode runs — 8090 for the primary site, 8091+ for the others.</p>
     </section>
 
     <section>

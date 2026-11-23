@@ -1,6 +1,6 @@
 {
   "name": "pocket-server",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "private": true,
   "description": "Turn an Android phone into a portable Node.js + Express server with a Wi-Fi file portal, packaged as a Capacitor APK.",
   "engines": {

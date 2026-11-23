@@ -58,9 +58,19 @@ would be harder to stop. If you want it at login:
 ## Public HTTPS link
 
 The **Public tunnel** card starts a `cloudflared` quick tunnel and shows the
-`https://….trycloudflare.com` address. For a stable hostname, put a named tunnel
-token in the same card; the token stays in `data\settings.json` on your PC and is
-never sent to the browser.
+`https://….trycloudflare.com` address, with a QR code for it. The *hosted site*
+choice publishes the site the picker above is showing, on that site's own port; the
+card says which site an already-running address serves. For a stable hostname, put a
+named tunnel token in the same card; the token stays in `data\settings.json` on your
+PC and is never sent to the browser.
+
+With a named tunnel, each site can also keep **own address** — for example
+`shop.example.com` for the second site and `www.example.com` for the primary one. Save
+it under the site picker in the tunnel card and the address is stored in
+`data\settings.json` per site. The route itself is made in the Cloudflare dashboard:
+add a public hostname for the tunnel and point it at `http://localhost:<that site's
+port>`. **Check** then asks the address who answers and tells you whether it reached
+this site, the control panel (the port is wrong) or nothing at all.
 
 ## Where your data lives
 
@@ -68,12 +78,19 @@ never sent to the browser.
 | --- | --- |
 | `data\pb_data` | SQLite database, uploaded collections, PocketBase settings |
 | `data\pb_public` | the hosted website — every file here is public on port 8090 |
-| `data\pb_public\backups` | nightly zips of `pb_data`, seven kept |
+| `data\backups\<site id>` | nightly zips of that site's `pb_data`, seven kept, **never inside the website** |
+| `data\pb_public\backups` | only zips written by 1.9.2 and earlier — public, see below |
 | `data\logs` | `pocketbase.log`, `cloudflared.log`, `panel.log` |
 | `data\settings.json` | panel PIN, session secret, tunnel token — **back this up, keep it private** |
 
 Copying the whole folder to another PC keeps everything. `data\` is created next to
 `node.exe`, so a fresh folder always starts clean.
+
+Backups used to be written into `data\pb_public\backups`, which PocketBase serves as
+the website — so anyone with the site's address could download the database. New zips
+go to `data\backups\<site id>` instead. Zips from an earlier version stay where they
+are and remain listed in the card, marked **public**; delete them from the Files tab
+once you have a copy.
 
 ## More than one site
 
