@@ -58,7 +58,7 @@ public class SiteRegistryTest {
         assertEquals(8090, site.port);
         assertEquals(new File(root, "pb_data").getAbsolutePath(), site.dataDir.getAbsolutePath());
         assertEquals(new File(root, "pb_public").getAbsolutePath(), site.publicDir.getAbsolutePath());
-        assertEquals(new File(root, "pb_public/backups").getAbsolutePath(), site.backupDir.getAbsolutePath());
+        assertEquals(new File(root, "backups/default").getAbsolutePath(), site.backupDir.getAbsolutePath());
         assertEquals("pocketbase", site.logName);
 
         assertEquals("the exact command line the service runs",

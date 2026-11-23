@@ -76,7 +76,7 @@ The APK's native library directory is the only place the OS still allows executi
 
 | Path | Purpose |
 | --- | --- |
-| `public/index.html`, `public/app.js`, `public/app.css` | Dashboard + Files + Logs tabs (Capacitor `webDir`) |
+| `public/index.html`, `public/app.js`, `public/qr.js`, `public/app.css` | Dashboard + Files + Logs tabs (Capacitor `webDir`); `qr.js` draws the tunnel address as a QR code |
 | `public/nodejs/server.js` | Express backend: status, files API, PIN auth, sessions, rate limits, tunnel control |
 | `public/nodejs/www/` | Generated copy of the UI that Express serves to LAN browsers |
 | `src/input.css` | Tailwind v4 entry (compiled locally so the panel works offline) |
@@ -281,13 +281,15 @@ cd android && ./gradlew assembleRelease
    `http://<phone-ip>:8090/<file>`; an `index.html` becomes the site root. Tap a file name
    to copy its URL; **Rename** and **Delete** work in place.
 5. **Public tunnel** → pick *Quick* or *Named*, then **Start**.
-   - *Quick* also needs a target (control panel 8080 or hosted site 8090) and gives a
-     random `https://xxx.trycloudflare.com` address each time.
+   - *Quick* also needs a target (control panel 8080 or the hosted site) and gives a
+     random `https://xxx.trycloudflare.com` address each time. With more than one site,
+     the *hosted site* choice follows the site picker and publishes that site's port, so
+     each site can be put online in turn.
    - *Named* uses a token from Cloudflare (Zero Trust → Tunnels → create → copy token),
      pasted into the card and saved on the device only. The hostname is whatever public
      hostname you point at this server in the Cloudflare dashboard; the address is stable.
 
-   The card shows the live URL and the notification mirrors it.
+   The card shows the live URL, a QR code for it, and the notification mirrors it.
 6. Exempt the app from battery optimisation (notification **Battery** action).
 
 ## API (control panel, port 8080)
@@ -305,13 +307,17 @@ Every route except `/api/health` and `/api/login` requires `X-Pocket-Token`.
 | `GET` | `/api/files/:name/download` | Download a file |
 | `POST` | `/api/files/:name/rename` | `{ name }` |
 | `DELETE` | `/api/files/:name` | Delete a file |
-| `GET` | `/api/tunnel` | Tunnel state + URL (`available` is false off-device) |
-| `POST` | `/api/tunnel` | `{ action: "start" \| "stop", mode: "quick" \| "named", target: "panel" \| "site" }` |
+| `GET` | `/api/tunnel` | Tunnel state + URL, `targets` (`panel` / selected site's port), `site` (`available` is false off-device) |
+| `POST` | `/api/tunnel` | `{ action: "start" \| "stop", mode: "quick" \| "named", target: "panel" \| "site", siteId?: "<id>" }` |
 | `POST` | `/api/tunnel/token` | `{ token }` — store the named-tunnel token (never returned by the API), `""` clears it |
 | `GET` | `/api/superuser` | `{ needsSetup, installer: { url, lanUrl, expiresAt }, result }` — the captured first-superuser link and the last CLI result |
 | `POST` | `/api/superuser` | `{ email, password }` — creates or resets the PocketBase superuser (8+ characters); the service stops the DB, runs `superuser upsert`, restarts it. `501` off-device |
-| `GET` | `/api/backup` | Last backup status plus the newest files with sizes |
+| `GET` | `/api/backup` | Last backup status plus the newest files with sizes; `public: true` marks a zip an older build left inside the published website folder, and `publicCount` counts them |
+| `GET` | `/api/backup/:name/download` | One zip, from the private folder or the old public one — needs the panel token |
 | `POST` | `/api/backup` | Ask the service for an immediate backup; one also runs nightly at 03:00 |
+| `GET` | `/api/domains` | `{ sites: [{ id, name, port, hostname, url }], siteId, namedTunnel }` — the own address saved for each site |
+| `POST` | `/api/domains` | `{ hostname }` for the site in `?site=` — a bare hostname like `shop.example.com`, `""` clears it, `409` if another site already has it, `400` if it is not a hostname |
+| `POST` | `/api/domains/check` | Fetches `https://<hostname>/api/health` and says which server answered: `kind: "site" \| "panel" \| "unreachable"` |
 | `GET` | `/api/integrity` | Re-hashes hosted files against the SHA-256 recorded at upload: `{ ok, checked, changed, missing, untracked }` |
 | `GET` | `/api/power` | `{ on, at, available }` — the service is the source of truth for the master switch |
 | `POST` | `/api/power` | `{ on: true \| false }` — stops/starts PocketBase and the tunnel, keeps the panel reachable; `501` off-device |

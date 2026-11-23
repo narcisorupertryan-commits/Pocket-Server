@@ -7,12 +7,15 @@
  *   node scripts/verify-panel-sites.mjs
  *
  * Covered: status, the file manager (list, download path, delete, upload), the backup
- * list and the backup command, the per-site PocketBase log, the superuser card's
- * installer/result scoping, and that a single-site folder ignores ?site= completely.
+ * list, the private backup folder and its token-protected download, the backup command,
+ * the per-site PocketBase log, the superuser card's installer/result scoping, the
+ * per-site tunnel target and its command, per-site own addresses, the QR encoder behind
+ * the public address, and that a single-site folder ignores ?site= completely.
  */
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +49,13 @@ function writeJson(file, value) {
 function seedTwoSites(dir) {
   fs.mkdirSync(path.join(dir, 'pb_public', 'backups'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'pb_public', 'index.html'), '<h1>primary</h1>');
+  // A zip an older build wrote into the published folder: still listed, flagged public.
+  fs.writeFileSync(path.join(dir, 'pb_public', 'backups', 'pb-2026-11-01-1200.zip'), 'old public zip');
+  // What the supervisor writes now: outside the web root, one folder per site.
+  fs.mkdirSync(path.join(dir, 'backups', 'default'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'backups', 'default', 'pb-2026-11-20-0300.zip'), 'primary private zip');
+  fs.mkdirSync(path.join(dir, 'backups', 'second'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'backups', 'second', 'pb-2026-11-21-0300.zip'), 'second private zip');
   fs.mkdirSync(path.join(dir, 'sites', 'second', 'pb_public', 'backups'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'sites', 'second', 'pb_public', 'only-second.txt'), 'second only');
   fs.mkdirSync(path.join(dir, 'logs'), { recursive: true });
@@ -63,6 +73,16 @@ function seedTwoSites(dir) {
     ok: true,
     message: 'second site account saved',
     at: new Date().toISOString(),
+  });
+  // What the supervisor writes while a quick tunnel serves the second site.
+  writeJson(path.join(dir, 'tunnel.status.json'), {
+    state: 'running',
+    mode: 'quick',
+    url: 'https://second-site.trycloudflare.com',
+    port: 8091,
+    siteId: 'second',
+    message: 'Quick tunnel is live.',
+    updatedAt: Date.now(),
   });
   writeJson(path.join(dir, 'sites.status.json'), {
     at: new Date().toISOString(),
@@ -161,6 +181,13 @@ function client(port, token) {
       });
       return { status: response.status, body: await response.json().catch(() => null) };
     },
+    async raw(route, withToken = true) {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+        headers: withToken ? headers : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      return { status: response.status, text: await response.text() };
+    },
     async upload(route, name, text) {
       const form = new FormData();
       form.append('files', new Blob([text]), name);
@@ -241,6 +268,42 @@ async function twoSites() {
 
     const backups = await api.get('/api/backup?site=second');
     check(backups.body?.siteId === 'second', 'the backup list names the site', backups.body?.siteId);
+
+    const secondList = (backups.body?.files || []).map((file) => `${file.name}:${file.public}`);
+    check(
+      secondList.includes('pb-2026-11-21-0300.zip:false'),
+      'the second site’s new backup is listed as private',
+      secondList.join(','),
+    );
+    check(
+      backups.body?.directory === path.join(dir, 'backups', 'second') &&
+        backups.body?.publicCount === 0,
+      'the second site backs up outside its website folder',
+      JSON.stringify([backups.body?.directory, backups.body?.publicCount]),
+    );
+
+    const primaryBackups = await api.get('/api/backup');
+    const primaryList = (primaryBackups.body?.files || []).map((file) => `${file.name}:${file.public}`);
+    check(
+      primaryList.includes('pb-2026-11-20-0300.zip:false') &&
+        primaryList.includes('pb-2026-11-01-1200.zip:true'),
+      'the primary site keeps the old public zip listed, flagged public',
+      primaryList.join(','),
+    );
+    check(primaryBackups.body?.publicCount === 1, 'and counts it as exposed', primaryBackups.body?.publicCount);
+
+    const privateZip = await api.raw('/api/backup/pb-2026-11-21-0300.zip/download?site=second');
+    check(
+      privateZip.status === 200 && privateZip.text === 'second private zip',
+      'a private backup downloads through the panel',
+      `${privateZip.status}: ${privateZip.text?.slice(0, 24)}`,
+    );
+    const lockedZip = await api.raw('/api/backup/pb-2026-11-21-0300.zip/download?site=second', false);
+    check(lockedZip.status === 401, 'and only with the panel token', lockedZip.status);
+    const otherSiteZip = await api.raw('/api/backup/pb-2026-11-20-0300.zip/download?site=second');
+    check(otherSiteZip.status === 404, 'another site’s private backup is not reachable', otherSiteZip.status);
+    const traversal = await api.raw('/api/backup/..%2F..%2Fsettings.json/download?site=second');
+    check(traversal.status === 400, 'a traversal in the backup name is refused', traversal.status);
     await api.post('/api/backup?site=second');
     let command = null;
     try {
@@ -271,6 +334,65 @@ async function twoSites() {
     const tunnelLog = await api.get('/api/logs?source=cloudflared&site=second');
     check(tunnelLog.body?.file === 'cloudflared.log', 'the tunnel log stays shared across sites', tunnelLog.body?.file);
 
+    const tunnel = await api.get('/api/tunnel?site=second');
+    check(
+      join([tunnel.body?.targets?.panel, tunnel.body?.targets?.site, tunnel.body?.site?.id]) === `${TWO_SITE_PORT}|8091|second`,
+      'the tunnel card targets the selected site’s port',
+      JSON.stringify([tunnel.body?.targets, tunnel.body?.site]),
+    );
+    check(
+      join([tunnel.body?.status?.siteId, tunnel.body?.status?.port]) === 'second|8091',
+      'and reports which site the running address serves',
+      JSON.stringify(tunnel.body?.status),
+    );
+
+    const primaryTunnel = await api.get('/api/tunnel');
+    check(
+      join([primaryTunnel.body?.targets?.site, primaryTunnel.body?.site?.id]) === '8090|default',
+      'without ?site the tunnel card targets the primary site',
+      JSON.stringify([primaryTunnel.body?.targets, primaryTunnel.body?.site]),
+    );
+
+    await api.post('/api/tunnel?site=second', { action: 'start', target: 'site', mode: 'quick' });
+    let tunnelCommand = null;
+    try {
+      tunnelCommand = JSON.parse(fs.readFileSync(path.join(dir, 'tunnel.command.json'), 'utf8'));
+    } catch (error) {
+      /* asserted below */
+    }
+    check(
+      tunnelCommand &&
+        tunnelCommand.action === 'start' &&
+        tunnelCommand.port === 8091 &&
+        tunnelCommand.siteId === 'second',
+      'the tunnel command carries the site id and its port',
+      JSON.stringify(tunnelCommand),
+    );
+
+    await api.post('/api/tunnel', { action: 'start', target: 'panel', mode: 'quick', siteId: 'second' });
+    try {
+      tunnelCommand = JSON.parse(fs.readFileSync(path.join(dir, 'tunnel.command.json'), 'utf8'));
+    } catch (error) {
+      tunnelCommand = null;
+    }
+    check(
+      tunnelCommand && tunnelCommand.port === TWO_SITE_PORT && tunnelCommand.siteId === '',
+      'publishing the control panel ignores the site port',
+      JSON.stringify(tunnelCommand),
+    );
+
+    const unknownSite = await api.post('/api/tunnel', {
+      action: 'start',
+      target: 'site',
+      mode: 'quick',
+      siteId: 'nope',
+    });
+    check(
+      unknownSite.status === 400,
+      'an unknown site is refused instead of silently publishing the primary site',
+      unknownSite.status,
+    );
+
     const secondSuperuser = await api.get('/api/superuser?site=second');
     check(
       secondSuperuser.body?.result?.message === 'second site account saved' && secondSuperuser.body?.needsSetup === true,
@@ -282,6 +404,37 @@ async function twoSites() {
       primarySuperuser.body?.result === null && primarySuperuser.body?.installer === null,
       'and the primary site does not see the second site’s setup',
       JSON.stringify(primarySuperuser.body),
+    );
+
+    const domains = await api.get('/api/domains');
+    check(
+      join((domains.body?.sites || []).map((site) => `${site.id}:${site.hostname}`)) === 'default:|second:',
+      'the own-address list starts empty for both sites',
+      JSON.stringify(domains.body?.sites),
+    );
+
+    const saved = await api.post('/api/domains?site=second', { hostname: 'Shop.Example.com' });
+    check(
+      saved.status === 200 &&
+        (saved.body?.sites || []).find((site) => site.id === 'second')?.hostname === 'shop.example.com',
+      'a hostname is saved for that site, lowercased',
+      JSON.stringify(saved.body?.sites),
+    );
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+    check(stored.domains?.second === 'shop.example.com', 'and lands in settings.json', JSON.stringify(stored.domains));
+
+    const duplicate = await api.post('/api/domains', { hostname: 'shop.example.com' });
+    check(duplicate.status === 409, 'the same address cannot belong to two sites', duplicate.status);
+    const badHost = await api.post('/api/domains?site=second', { hostname: 'not a host' });
+    check(badHost.status === 400, 'a hostname that is not one is refused', badHost.status);
+    const noAddress = await api.post('/api/domains/check?site=default');
+    check(noAddress.status === 400, 'checking needs a saved address first', noAddress.status);
+
+    const cleared = await api.post('/api/domains?site=second', { hostname: '' });
+    check(
+      (cleared.body?.sites || []).find((site) => site.id === 'second')?.hostname === '',
+      'an empty address clears it',
+      JSON.stringify(cleared.body?.sites),
     );
   } finally {
     panel.kill('SIGKILL');
@@ -319,9 +472,76 @@ async function singleSite() {
     );
     const logs = await api.get('/api/logs?source=pocketbase&site=second');
     check(logs.body?.file === 'pocketbase.log', 'the single site still reads logs/pocketbase.log', logs.body?.file);
+
+    const tunnel = await api.get('/api/tunnel?site=second');
+    check(
+      join([tunnel.body?.targets?.site, tunnel.body?.targets?.panel]) === `8090|${SINGLE_SITE_PORT}`,
+      'the single-site tunnel still publishes 8090 and ignores ?site',
+      JSON.stringify(tunnel.body?.targets),
+    );
+
+    const domains = await api.get('/api/domains');
+    check(
+      (domains.body?.sites || []).length === 1 &&
+        domains.body.sites[0].id === 'default' &&
+        domains.body.sites[0].port === 8090,
+      'a single site can still be given an own address',
+      JSON.stringify(domains.body?.sites),
+    );
   } finally {
     panel.kill('SIGKILL');
   }
+}
+
+function qrCode() {
+  console.log('\nTunnel QR code:');
+  const require = createRequire(import.meta.url);
+  const qr = require(path.join(ROOT, 'public', 'qr.js'));
+
+  const url = 'https://second-site.trycloudflare.com';
+  const code = qr.matrix(url);
+  check(
+    code.size === 17 + code.version * 4 && code.modules.length === code.size,
+    'the QR matrix size matches its version',
+    `${code.size}px / v${code.version}`,
+  );
+
+  // Each finder is a dark ring, a light inner ring and a dark 3x3 core.
+  const finder = (row, column) =>
+    code.modules[row][column] === 1 &&
+    code.modules[row][column + 6] === 1 &&
+    code.modules[row + 1][column + 1] === 0 &&
+    code.modules[row + 2][column + 2] === 1 &&
+    code.modules[row + 6][column + 6] === 1;
+  check(
+    finder(0, 0) && finder(0, code.size - 7) && finder(code.size - 7, 0),
+    'all three finder patterns are in place',
+  );
+
+  const svg = qr.svg(url, { margin: 2 });
+  const viewBox = /viewBox="0 0 (\d+) (\d+)"/.exec(svg);
+  check(
+    svg.startsWith('<svg') && viewBox !== null && Number(viewBox[1]) === code.size + 4,
+    'the renderer surrounds the matrix with its quiet zone',
+    viewBox && viewBox[1],
+  );
+
+  let refused = false;
+  try {
+    qr.matrix('x'.repeat(400));
+  } catch (error) {
+    refused = true;
+  }
+  check(refused, 'an address too long to encode is refused, not rendered broken');
+
+  // The page needs the encoder before app.js runs, and the LAN/Windows copy needs it too.
+  const page = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+  check(
+    page.indexOf('src="qr.js"') !== -1 && page.indexOf('src="qr.js"') < page.indexOf('src="app.js"'),
+    'index.html loads qr.js before app.js',
+  );
+  const sync = fs.readFileSync(path.join(ROOT, 'scripts', 'sync-ui.mjs'), 'utf8');
+  check(sync.includes("'qr.js'"), 'sync-ui.mjs copies qr.js into the served dashboard');
 }
 
 async function main() {
@@ -329,6 +549,7 @@ async function main() {
   try {
     await twoSites();
     await singleSite();
+    qrCode();
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

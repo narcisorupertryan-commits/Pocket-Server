@@ -336,7 +336,18 @@ async function main() {
   const backup = await waitForJson(path.join(dataDir, 'backup.status.json'), (value) => value.ok === true && typeof value.file === 'string');
   check(Boolean(backup), 'a backup command without a siteId still works');
   check(Boolean(backup) && backup.siteId === 'default', 'and reports the original site');
-  check(Boolean(backup) && fs.existsSync(path.join(dataDir, 'pb_public', 'backups', backup.file)), 'writing into data/pb_public/backups, as before');
+  check(
+    Boolean(backup) && fs.existsSync(path.join(dataDir, 'backups', 'default', backup.file)),
+    'writing into data/backups/default, outside the published website',
+  );
+  check(
+    Boolean(backup) && !fs.existsSync(path.join(dataDir, 'pb_public', 'backups', backup.file)),
+    'and nothing new lands in the folder PocketBase serves',
+  );
+  check(
+    fs.existsSync(path.join(dataDir, 'pb_public', 'backups', 'pb-2026-11-01-1200.zip')),
+    'the old public zip is left where the earlier build put it',
+  );
   check(
     sha256(path.join(dataDir, 'pb_data', 'data.db')) === before.get('pb_data/data.db'),
     'the database is still byte-identical after pausing for the backup',

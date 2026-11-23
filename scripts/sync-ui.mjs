@@ -17,6 +17,7 @@ const target = path.join(source, 'nodejs', 'www');
 const files = [
   'index.html',
   'app.js',
+  'qr.js',
   'app.css',
   'theme-init.js',
   'logo.png',
