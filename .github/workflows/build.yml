@@ -124,7 +124,7 @@ jobs:
             $zip = $null
             for ($i = 0; $i -lt 20; $i++) {
               Start-Sleep -Seconds 3
-              $zip = Get-ChildItem (Join-Path $data 'pb_public\backups\*.zip') -ErrorAction SilentlyContinue | Select-Object -First 1
+              $zip = Get-ChildItem (Join-Path $data 'backups\default\*.zip') -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($zip) { break }
             }
             if (-not $zip) {
@@ -155,7 +155,7 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'pb_data\data.db'))) { throw 'The first run left no database in data\pb_data' }
           $probe = Join-Path $data 'pb_data\upgrade-probe.txt'
           Set-Content -Path $probe -Value 'written before the second start' -NoNewline
-          $oldBackup = Get-ChildItem (Join-Path $data 'pb_public\backups\*.zip') | Select-Object -First 1
+          $oldBackup = Get-ChildItem (Join-Path $data 'backups\default\*.zip') | Select-Object -First 1
           if (-not $oldBackup) { throw 'The backup from the first run is missing' }
 
           $registry = @{
@@ -189,7 +189,7 @@ jobs:
 
             if (-not (Test-Path (Join-Path $data 'pb_data\data.db'))) { throw 'The original database is gone' }
             if ((Get-Content $probe -Raw) -ne 'written before the second start') { throw 'The original data folder was modified' }
-            if (-not (Test-Path (Join-Path (Join-Path $data 'pb_public\backups') $oldBackup.Name))) { throw 'The old backup was not preserved' }
+            if (-not (Test-Path (Join-Path (Join-Path $data 'backups\default') $oldBackup.Name))) { throw 'The old backup was not preserved' }
             if (-not (Test-Path (Join-Path $data 'sites\second\pb_data\data.db'))) { throw 'The second site has no database of its own' }
             Write-Host 'The original folder is intact and the second site has its own database'
 
